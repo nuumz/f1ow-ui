@@ -127,10 +127,10 @@ export function usePerformanceInspector(
 
   // Memoized performance summary
   const performanceSummary = useMemo(() => {
-    if (!enabled) return null;
+    if (!enabled) {return null;}
     
     const metrics = performanceRegistry.get(componentName);
-    if (!metrics) return null;
+    if (!metrics) {return null;}
 
     return {
       renderCount: metrics.renderCount,

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef } from 'react';
+import { useCallback, useMemo, useRef, useEffect } from 'react';
 import type { Connection, NodeVariant, WorkflowNode } from '../types';
 import { generateModeAwareConnectionPath } from '../utils/connection-utils';
 import { PERFORMANCE_CONSTANTS } from '../utils/canvas-constants';
@@ -8,7 +8,6 @@ type DragPos = { x: number; y: number };
 export interface UseConnectionPathsApi {
   getConnectionPath: (connection: Connection, useDragPositions?: boolean) => string;
   updateDragPosition: (nodeId: string, pos: DragPos) => void;
-  clearDragPosition: (nodeId: string) => void;
   clearAllDragPositions: () => void;
   clearCache: () => void;
 }
@@ -37,13 +36,16 @@ export function useConnectionPaths(
     pathCacheRef.current.clear();
   }, []);
 
+  // Important: Invalidate cached paths whenever node list/positions, variant, or mode changes
+  // This prevents stale paths (e.g., from a previous drag) from being reused and causing flicker
+  useEffect(() => {
+    pathCacheRef.current.clear();
+  }, [nodes, nodeVariant, modeId]);
+
   const updateDragPosition = useCallback((nodeId: string, pos: DragPos) => {
     dragPositionsRef.current.set(nodeId, pos);
   }, []);
 
-  const clearDragPosition = useCallback((nodeId: string) => {
-    dragPositionsRef.current.delete(nodeId);
-  }, []);
 
   const clearAllDragPositions = useCallback(() => {
     dragPositionsRef.current.clear();
@@ -91,14 +93,13 @@ export function useConnectionPaths(
 
   const getConnectionPath = useCallback(
     (connection: Connection, useDragPositions = false): string => {
-      // If either endpoint is being overridden by drag, force drag mode to avoid cache flicker
-      const hasDragOverride =
-        dragPositionsRef.current.has(connection.sourceNodeId) ||
-        dragPositionsRef.current.has(connection.targetNodeId);
+      // CRITICAL FIX: Only use drag positions if explicitly requested AND they exist
+      // This prevents flickering from stale drag position references
+      const effectiveUseDrag = useDragPositions;
 
-      const effectiveUseDrag = useDragPositions || hasDragOverride;
-
-      const cacheKey = `${connection.id}-${connection.sourceNodeId}-${connection.sourcePortId}-${connection.targetNodeId}-${connection.targetPortId}-${nodeVariant}-${modeId || 'workflow'}${effectiveUseDrag ? '-drag' : ''}`;
+      // Simplified cache key without drag suffix to maintain consistency
+      // Drag positions will naturally invalidate the cache when nodes move
+      const cacheKey = `${connection.id}-${connection.sourceNodeId}-${connection.sourcePortId}-${connection.targetNodeId}-${connection.targetPortId}-${nodeVariant}-${modeId || 'workflow'}`;
 
       if (!effectiveUseDrag) {
         const cached = pathCacheRef.current.get(cacheKey);
@@ -115,16 +116,22 @@ export function useConnectionPaths(
 
       let nodesForPath = nodes;
       if (effectiveUseDrag) {
+        // CRITICAL FIX: Only apply drag positions if they exist for the specific connection nodes
+        // This prevents using stale positions from previous drags
         const srcDrag = dragPositionsRef.current.get(connection.sourceNodeId);
         const tgtDrag = dragPositionsRef.current.get(connection.targetNodeId);
+
+        // Only modify nodes if we have current drag positions for them
         if (srcDrag || tgtDrag) {
           nodesForPath = nodes.map((n) => {
+            // Only override position if we have a current drag position for this specific node
             if (srcDrag && n.id === connection.sourceNodeId) {
               return { ...n, x: srcDrag.x, y: srcDrag.y };
             }
             if (tgtDrag && n.id === connection.targetNodeId) {
               return { ...n, x: tgtDrag.x, y: tgtDrag.y };
             }
+            // Use committed position from nodes array for all other nodes
             return n;
           });
         }
@@ -159,7 +166,6 @@ export function useConnectionPaths(
   return {
     getConnectionPath,
     updateDragPosition,
-    clearDragPosition,
     clearAllDragPositions,
     clearCache,
   };

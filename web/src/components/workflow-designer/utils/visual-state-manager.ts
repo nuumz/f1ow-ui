@@ -11,6 +11,14 @@ import { getNodeColor } from './node-utils'
 type LayerSelection = d3.Selection<SVGGElement, unknown, null, undefined>
 type NodeElementSelection = d3.Selection<SVGGElement, unknown, null, undefined>
 
+// Drag smoothing and gating configuration
+const SMOOTHING_ALPHA = 0.5 // 0..1 (higher = follow cursor more closely)
+const MOVEMENT_THRESHOLD_PX = 2 // skip connection path recompute if movement is below this distance
+const MOVEMENT_THRESHOLD_SQ = MOVEMENT_THRESHOLD_PX * MOVEMENT_THRESHOLD_PX
+
+// Keep track of the last position used to trigger a connection-path update per node (for spatial gating)
+const lastConnUpdatePos: Map<string, { x: number; y: number }> = new Map()
+
 // Adaptive performance configuration interfaces
 interface AdaptiveConfig {
     vBudget: number
@@ -169,11 +177,17 @@ export function processBatchedConnectionUpdates(
             }))
             .filter(({ element }) => !element.empty())
 
-        // Update all paths in a single batch
+        // Update all paths in a single batch (no-op if path unchanged)
         connectionElements.forEach(({ conn, element }) => {
             const pathElement = element.select('.connection-path')
-            const newPath = getConnectionPath(conn, true)
-            pathElement.attr('d', newPath)
+            // CRITICAL FIX: Only use drag positions if this connection involves the currently dragged node
+            // This prevents using stale drag positions from previous drag operations
+            const shouldUseDragPositions = nodeId === conn.sourceNodeId || nodeId === conn.targetNodeId
+            const newPath = getConnectionPath(conn, shouldUseDragPositions)
+            const oldPath = pathElement.attr('d')
+            if (oldPath !== newPath) {
+                pathElement.attr('d', newPath)
+            }
         })
 
         connectionUpdateQueue.delete(nodeId)
@@ -208,19 +222,47 @@ export function updateDraggedNodePosition(
     newY: number,
     config: DragPositionConfig
 ): void {
-    // Always update node position immediately for smooth dragging
-    if (config.draggedElement) {
-        config.draggedElement.attr('transform', `translate(${newX}, ${newY})`)
+    // CRITICAL FIX: Get previous position for smoothing, but validate it's from current drag session
+    let prev = config.currentDragPositions.get(nodeId)
+
+    // If no previous position or position is too far (indicating a new drag or stale data), start fresh
+    if (!prev) {
+        prev = { x: newX, y: newY }
+    } else {
+        // Check if this is likely a stale position from a previous drag session
+        const distSq = (prev.x - newX) * (prev.x - newX) + (prev.y - newY) * (prev.y - newY)
+        if (distSq > 10000) { // More than 100px away, likely stale from previous drag
+            prev = { x: newX, y: newY }
+        }
     }
 
-    // Store current drag position
-    config.currentDragPositions.set(nodeId, { x: newX, y: newY })
-    // Sync with connection paths hook for live path updates during drag
-    config.updateConnDragPos(nodeId, { x: newX, y: newY })
+    const smoothedX = prev.x + (newX - prev.x) * SMOOTHING_ALPHA
+    const smoothedY = prev.y + (newY - prev.y) * SMOOTHING_ALPHA
 
-    // Throttle connection updates to improve performance
+    // Always update node position immediately for smooth dragging (using smoothed coordinates)
+    if (config.draggedElement) {
+        config.draggedElement.attr('transform', `translate(${smoothedX}, ${smoothedY})`)
+    }
+
+    // Store current smoothed drag position
+    const smoothed = { x: smoothedX, y: smoothedY }
+    config.currentDragPositions.set(nodeId, smoothed)
+    // Sync with connection paths hook for live path updates during drag (use smoothed to prevent jitter)
+    config.updateConnDragPos(nodeId, smoothed)
+
+    // Spatial threshold gating: only recompute connection paths if movement from the last recompute exceeds threshold
+    const lastForConn = lastConnUpdatePos.get(nodeId)
+    if (lastForConn) {
+        const dx = smoothedX - lastForConn.x
+        const dy = smoothedY - lastForConn.y
+        if (dx * dx + dy * dy < MOVEMENT_THRESHOLD_SQ) {
+            return
+        }
+    }
+
+    // Time-based throttle to improve performance (reduced throttle for more responsive updates)
     const now = Date.now()
-    if (now - config.lastDragUpdate.current < config.dragUpdateThrottle) {
+    if (now - config.lastDragUpdate.current < Math.min(config.dragUpdateThrottle, 16)) { // Max 60fps
         return
     }
     config.lastDragUpdate.current = now
@@ -229,7 +271,38 @@ export function updateDraggedNodePosition(
     const affectedConnections = config.nodeConnectionsMap.get(nodeId) || []
     if (affectedConnections.length > 0) {
         config.connectionUpdateQueue.add(nodeId)
+        lastConnUpdatePos.set(nodeId, smoothed)
         config.startBatchedConnectionUpdates()
+    }
+}
+
+/**
+ * Clears drag position tracking for a specific node
+ */
+export function clearNodeDragTracking(nodeId: string): void {
+    lastConnUpdatePos.delete(nodeId)
+    // Also clear from window adaptive configs to prevent stale state
+    if (window.__wfAdaptive) {
+        window.__wfAdaptive.lastDuration = 0
+    }
+    if (window.__wfConnAdaptive) {
+        window.__wfConnAdaptive.lastDuration = 0
+    }
+}
+
+/**
+ * Clears all drag position tracking
+ */
+export function clearAllDragTracking(): void {
+    lastConnUpdatePos.clear()
+    // Reset adaptive configs to prevent performance issues from stale state
+    if (window.__wfAdaptive) {
+        window.__wfAdaptive.lastDuration = 0
+        window.__wfAdaptive.vBudget = 4 // Reset to default
+    }
+    if (window.__wfConnAdaptive) {
+        window.__wfConnAdaptive.lastDuration = 0
+        window.__wfConnAdaptive.cBudget = 8 // Reset to default
     }
 }
 
@@ -279,6 +352,7 @@ export function clearAllVisualCaches(config: VisualCacheConfig): void {
     config.visualUpdateQueue.clear()
     config.zIndexManager.clearState()
     config.rafScheduler.clear()
+    lastConnUpdatePos.clear()
 
     if (config.batchedConnectionUpdateRef.current) {
         cancelAnimationFrame(config.batchedConnectionUpdateRef.current)

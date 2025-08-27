@@ -175,6 +175,9 @@ export function renderConnectionsLayer(opts: RenderConnectionsOptions) {
                 }
                 return 2
             })
+            .attr('stroke-linecap', 'round')
+            .attr('stroke-linejoin', 'round')
+            .attr('shape-rendering', 'geometricPrecision')
             .attr('marker-end', (d: Connection) => getConnectionMarker(d, 'default'))
             .style('marker-end', (d: Connection) => getConnectionMarker(d, 'default'))
             .style('display', (d: Connection) => {

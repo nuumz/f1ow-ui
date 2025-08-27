@@ -86,6 +86,7 @@ import {
   updateDraggedNodePosition,
   resetNodeVisualStyle,
   clearAllVisualCaches,
+  clearAllDragTracking,
   type DragPositionConfig,
   type VisualCacheConfig,
 } from '../utils/visual-state-manager';
@@ -532,7 +533,6 @@ function WorkflowCanvas({
   const {
     getConnectionPath: getConnectionPathFromHook,
     updateDragPosition: updateConnDragPos,
-    clearDragPosition,
     clearAllDragPositions,
     clearCache: clearConnCache,
   } = useConnectionPaths(nodes, nodeVariant, workflowContextState.designerMode as DesignerMode);
@@ -1170,19 +1170,59 @@ function WorkflowCanvas({
         dragData.hasDragged = false;
         dragData.dragStartTime = Date.now();
 
+        // CRITICAL: Clear ALL drag positions synchronously before starting new drag
+        // This prevents stale positions from affecting smoothing calculations and connection flickering
+        // First cancel any pending RAF updates to avoid race with immediate sync updates below
+        if (batchedConnectionUpdateRef.current) {
+          cancelAnimationFrame(batchedConnectionUpdateRef.current);
+          batchedConnectionUpdateRef.current = null;
+        }
+        if (batchedVisualUpdateRef.current) {
+          cancelAnimationFrame(batchedVisualUpdateRef.current);
+          batchedVisualUpdateRef.current = null;
+        }
+
+        clearAllDragPositions(); // Clear hook's drag positions
+        clearAllDragTracking(); // Clear visual state manager tracking
+        currentDragPositionsRef.current.clear(); // Clear local canvas drag positions
+        connectionUpdateQueueRef.current.clear();
+        visualUpdateQueueRef.current.clear();
+
+        // note: RAFs already canceled above to avoid interleaving
+
         // Context: mark dragging and store element
         startDragging(d.id, { x: d.x, y: d.y });
         const nodeElement = d3.select(this);
         nodeElement.classed('dragging', true);
         draggedElementRef.current = nodeElement;
 
-        // Ensure connection system starts from a clean state and uses drag overrides immediately
+        // Clear cached paths to ensure fresh computation
+        clearConnCache();
+
+        // Initialize the drag position immediately to prevent smoothing from using stale data
+        currentDragPositionsRef.current.set(d.id, { x: d.x, y: d.y });
+        updateConnDragPos(d.id, { x: d.x, y: d.y });
+
+        // Force immediate update of ALL connection paths to ensure they use correct positions
+        // This is critical to prevent flickering when switching between dragging different nodes
         try {
-          // 1) Clear cached paths to avoid stale geometry on the first drag frame
-          clearConnCache();
-          // Note: Do not proactively refresh paths here; let RAF-batched updater handle it
-        } catch {
-          // keep silent in production; dev warnings are handled elsewhere
+          const connectionLayer = getCachedSelection('connectionLayer');
+          if (connectionLayer) {
+            connections.forEach((conn) => {
+              const group = connectionLayer.select(`[data-connection-id="${conn.id}"]`);
+              if (!group.empty()) {
+                const pathEl = group.select('.connection-path');
+                // Use drag positions only for connections involving the current drag node
+                const useDragPos = conn.sourceNodeId === d.id || conn.targetNodeId === d.id;
+                const newPath = getConnectionPath(conn, useDragPos);
+                pathEl.attr('d', newPath);
+              }
+            });
+          }
+        } catch (e) {
+          if (process.env.NODE_ENV === 'development') {
+            console.warn('dragStarted connection update error', e);
+          }
         }
       }
 
@@ -1251,18 +1291,6 @@ function WorkflowCanvas({
 
           // Update node position in parent state
           onNodeDrag(d.id, d.x, d.y);
-
-          // Force immediate connection path updates for this node
-          try {
-            connectionUpdateQueueRef.current.add(d.id);
-            if (!batchedConnectionUpdateRef.current) {
-              batchedConnectionUpdateRef.current = requestAnimationFrame(
-                processBatchedConnectionUpdatesCallback
-              );
-            }
-          } catch {
-            // ignore
-          }
         }
 
         // Clean up drag state
@@ -1290,10 +1318,23 @@ function WorkflowCanvas({
           draggedElementRef.current = null;
         }
 
-        // Clear drag position tracking and remove from update queues
-        currentDragPositionsRef.current.delete(d.id);
-        connectionUpdateQueueRef.current.delete(d.id);
-        visualUpdateQueueRef.current.delete(d.id);
+        // CRITICAL: Clear ALL drag tracking immediately and synchronously
+        // This prevents any lingering drag state from affecting future drags and connection flickering
+        clearAllDragPositions(); // Clear hook's drag positions
+        clearAllDragTracking(); // Clear visual state manager tracking
+        currentDragPositionsRef.current.clear(); // Clear local canvas drag positions
+        connectionUpdateQueueRef.current.clear();
+        visualUpdateQueueRef.current.clear();
+
+        // Cancel any pending RAF updates
+        if (batchedConnectionUpdateRef.current) {
+          cancelAnimationFrame(batchedConnectionUpdateRef.current);
+          batchedConnectionUpdateRef.current = null;
+        }
+        if (batchedVisualUpdateRef.current) {
+          cancelAnimationFrame(batchedVisualUpdateRef.current);
+          batchedVisualUpdateRef.current = null;
+        }
 
         // Reset visual styles
         resetNodeVisualStyleCallback(nodeElement, d.id);
@@ -1301,28 +1342,28 @@ function WorkflowCanvas({
         // Reorganize z-index immediately after drag ends to restore proper order
         zIndexManager.organizeNodeZIndexImmediate(); // immediate layering
 
-        // Ensure connection paths are recalculated without re-committing node position
+        // Force immediate refresh of all connection paths with real positions
         try {
-          // 1) Clear drag override for this node in the connection path system
-          clearDragPosition(d.id);
-
-          // 2) Clear cached paths to force fresh computation using committed positions
+          // Clear the cache to ensure fresh paths
           clearConnCache();
 
-          // 3) Immediately update affected connection paths in the DOM (non-drag positions)
-          const affected = nodeConnectionsMap.get(d.id) || [];
-          if (affected.length > 0) {
-            const connectionLayer = getCachedSelection('connectionLayer');
-            if (connectionLayer) {
-              affected.forEach((conn) => {
-                const group = connectionLayer.select(`[data-connection-id="${conn.id}"]`);
-                if (!group.empty()) {
-                  const pathEl = group.select('.connection-path');
-                  const newPath = getConnectionPath(conn, false);
+          // CRITICAL FIX: Update connection paths synchronously to prevent flickering
+          // Using requestAnimationFrame can cause race conditions with subsequent drags
+          const connectionLayer = getCachedSelection('connectionLayer');
+          if (connectionLayer && connections.length > 0) {
+            // Update all connection paths immediately with committed node positions
+            connections.forEach((conn) => {
+              const group = connectionLayer.select(`[data-connection-id="${conn.id}"]`);
+              if (!group.empty()) {
+                const pathEl = group.select('.connection-path');
+                // CRITICAL: Use false to ensure we get paths based on committed node positions only
+                const newPath = getConnectionPath(conn, false); // false = use real positions, no drag
+                const currentPath = pathEl.attr('d');
+                if (currentPath !== newPath) {
                   pathEl.attr('d', newPath);
                 }
-              });
-            }
+              }
+            });
           }
         } catch (e) {
           // Keep failures silent but visible in dev
@@ -2172,15 +2213,14 @@ function WorkflowCanvas({
             .select('g.node-layer')
             .selectAll<SVGGElement, any>('.node.dragging');
           const draggingIds = new Set<string>();
-          draggingSel.each(function (this: SVGGElement, d: any) {
-            const id = (d && d.id) || this.getAttribute('data-node-id');
+          const draggingNodes = draggingSel.nodes();
+          draggingNodes.forEach((el) => {
+            const bound = d3.select(el).datum() as any;
+            const id = bound?.id ?? el.getAttribute('data-node-id') ?? undefined;
             if (id) {
               draggingIds.add(String(id));
             }
           });
-
-          // Remove only the currently dragging nodes to avoid full layer churn
-          draggingSel.remove();
 
           // Also remove any connections associated with those nodes from the connection layer
           if (draggingIds.size > 0) {
@@ -2194,6 +2234,9 @@ function WorkflowCanvas({
               )
               .remove();
           }
+
+          // Remove only the currently dragging nodes to avoid full layer churn
+          draggingSel.remove();
 
           // Note: Keep <defs> and <g.canvas-root> to avoid losing markers and zoom/pan state
         }
@@ -2285,8 +2328,8 @@ function WorkflowCanvas({
         svg,
         connections: connectionsToRender,
         onConnectionClick,
-        // Approach B: when dragging, force use of drag positions to keep both writers in sync
-        getConnectionPath: (c) => getConnectionPath(c, isDragging),
+        // Use cached paths for render pass; live drag geometry is handled by RAF batch updater
+        getConnectionPath: (c) => getConnectionPath(c),
         createFilledPolygonFromPath: createFilledPolygonFromPathCallback,
         getConnectionMarker,
         getConnectionGroupInfo: (id, list) =>
@@ -2306,8 +2349,6 @@ function WorkflowCanvas({
     createFilledPolygonFromPathCallback,
     getConnectionMarker,
     svgRef,
-    zIndexManager,
-    isDragging,
   ]);
 
   // Bind root SVG events in a tiny effect to avoid stale closures
