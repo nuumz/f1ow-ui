@@ -19,13 +19,10 @@ import {
 import { useWorkflowVirtualization } from '../hooks/useVirtualization';
 import {
   getNodeColor,
-  getPortColor,
   getNodeIcon,
   getNodeShape,
   getShapeAwareDimensions,
   getNodeShapePath,
-  NODE_WIDTH,
-  NODE_MIN_HEIGHT,
   NodeTypes,
 } from '../utils/node-utils';
 import { renderIconUse } from '../utils/icon-symbols';
@@ -50,12 +47,11 @@ import {
 } from '../utils/connection-utils';
 import { getVisibleCanvasBounds } from '../utils/canvas-utils';
 import {
-  calculatePortPosition,
   computeRectPortPositions,
   computeCirclePortPositions,
   computeDiamondPortPositions,
 } from '../utils/port-positioning';
-import { canBottomPortAcceptConnection, getPortHighlightClass } from '../utils/port-visuals';
+import { canBottomPortAcceptConnection } from '../utils/port-visuals';
 import { createFilledPolygonFromPath } from '../utils/path-generation';
 import {
   createD3SelectionCache,
@@ -63,8 +59,15 @@ import {
   createZIndexManager,
 } from '../utils/d3-manager';
 import { createPortDragCallbacks, resolveDragEndTarget } from '../utils/drag-drop-helpers';
+import { createNodeDragBehavior } from '../utils/node-drag';
 import { renderConnectionsLayer } from '../utils/connection-dom';
 import { groupConnectionsBySideAndPort } from '../utils/connection-utils';
+import {
+  renderOutputPorts,
+  renderSidePorts,
+  renderBottomPorts,
+  renderInputPorts,
+} from '../utils/ports-dom';
 import {
   attachNodeBackgroundEvents,
   applyNodeVisualState,
@@ -73,7 +76,6 @@ import {
   updateNodeBackgroundPath,
 } from '../utils/nodes-dom';
 
-// Import extracted helpers
 import {
   announce,
   ensureFocusStyles,
@@ -88,22 +90,18 @@ import {
   resetNodeVisualStyle,
   clearAllVisualCaches,
   clearAllDragTracking,
-  forceCompleteStateSyncAfterDrop,
   type DragPositionConfig,
   type VisualCacheConfig,
 } from '../utils/visual-state-manager';
 
-// Shared aliases to reduce repetition and satisfy lint rules
 type MarkerState = 'default' | 'selected' | 'hover';
 
-// Strongly-typed drag connection data
 interface DragConnectionData {
   nodeId: string;
   portId: string;
   type: 'input' | 'output';
 }
 
-// Component props
 interface WorkflowCanvasProps {
   svgRef: React.RefObject<SVGSVGElement>;
   nodes: WorkflowNode[];
@@ -175,7 +173,7 @@ function WorkflowCanvas({
   onTransformChange,
   onRegisterZoomBehavior,
   onZoomLevelChange,
-  onPlusButtonClick,
+  onPlusButtonClick: _onPlusButtonClick,
 }: WorkflowCanvasProps) {
   // Keep latest connection state in a ref to avoid stale closures inside D3 handlers
   const isConnectingRef = useRef(isConnecting);
@@ -184,7 +182,9 @@ function WorkflowCanvas({
     isConnectingRef.current = isConnecting;
     connectionStartRef.current = connectionStart;
   }, [isConnecting, connectionStart]);
+
   // Use optimized selector hooks instead of full context
+  // Global shortcuts handled elsewhere; duplicate handler removed
   const {
     isDragging: isContextDragging,
     getDraggedNodeId,
@@ -1184,252 +1184,44 @@ function WorkflowCanvas({
           ...opts,
         });
 
-      function dragStarted(this: any, event: any, d: WorkflowNode) {
-        // Guard: while connecting, do not allow node dragging to start
-        if (isConnectingRef.current || dragConnectionDataRef.current) {
-          event?.sourceEvent?.stopPropagation?.();
-          return;
-        }
-
-        const svgElement = svgRef.current!;
-        const sourceEvent = event.sourceEvent || event;
-        const [mouseX, mouseY] = d3.pointer(sourceEvent, svgElement);
-        const transform = d3.zoomTransform(svgElement);
-        const [canvasX, canvasY] = transform.invert([mouseX, mouseY]);
-
-        const dragData = d as any;
-        dragData.dragStartX = canvasX;
-        dragData.dragStartY = canvasY;
-        dragData.initialX = d.x;
-        dragData.initialY = d.y;
-        dragData.hasDragged = false;
-        dragData.dragStartTime = Date.now();
-
-        // CRITICAL: Clear ALL drag positions synchronously before starting new drag
-        // This prevents stale positions from affecting smoothing calculations and connection flickering
-        // First cancel any pending RAF updates to avoid race with immediate sync updates below
-        if (batchedConnectionUpdateRef.current) {
-          cancelAnimationFrame(batchedConnectionUpdateRef.current);
-          batchedConnectionUpdateRef.current = null;
-        }
-        if (batchedVisualUpdateRef.current) {
-          cancelAnimationFrame(batchedVisualUpdateRef.current);
-          batchedVisualUpdateRef.current = null;
-        }
-
-        clearAllDragPositions(); // Clear hook's drag positions
-        clearAllDragTracking(); // Clear visual state manager tracking
-        currentDragPositionsRef.current.clear(); // Clear local canvas drag positions
-        connectionUpdateQueueRef.current.clear();
-        visualUpdateQueueRef.current.clear();
-
-        // note: RAFs already canceled above to avoid interleaving
-
-        // Context: mark dragging and store element
-        startDragging(d.id, { x: d.x, y: d.y });
-        const nodeElement = d3.select(this);
-        nodeElement.classed('dragging', true);
-        draggedElementRef.current = nodeElement;
-
-        // Clear cached paths to ensure fresh computation
-        clearConnCache();
-
-        // Initialize the drag position immediately to prevent smoothing from using stale data
-        currentDragPositionsRef.current.set(d.id, { x: d.x, y: d.y });
-        updateConnDragPos(d.id, { x: d.x, y: d.y });
-
-        // Force immediate update of ALL connection paths to ensure they use correct positions
-        // This is critical to prevent flickering when switching between dragging different nodes
-        try {
-          const connectionLayer = getCachedSelection('connectionLayer');
-          if (connectionLayer) {
-            // CRITICAL: First ensure all connections use committed positions, then apply drag for current node
-            connections.forEach((conn) => {
-              const group = connectionLayer.select(`[data-connection-id="${conn.id}"]`);
-              if (!group.empty()) {
-                const pathEl = group.select('.connection-path');
-                // Use drag positions only for connections involving the current drag node
-                const useDragPos = conn.sourceNodeId === d.id || conn.targetNodeId === d.id;
-                const newPath = getConnectionPath(conn, useDragPos);
-                pathEl.attr('d', newPath);
-              }
-            });
-          }
-        } catch (e) {
-          if (process.env.NODE_ENV === 'development') {
-            console.warn('dragStarted connection update error', e);
-          }
-        }
-      }
-
-      function dragged(this: any, event: any, d: WorkflowNode) {
-        const dragData = d as any;
-        if (dragData.initialX === undefined || dragData.initialY === undefined) {
-          return;
-        }
-
-        const svgElement = svgRef.current!;
-        const sourceEvent = event.sourceEvent || event;
-        const [mouseX, mouseY] = d3.pointer(sourceEvent, svgElement);
-        const transform = d3.zoomTransform(svgElement);
-        const [currentCanvasX, currentCanvasY] = transform.invert([mouseX, mouseY]);
-
-        const deltaX = currentCanvasX - dragData.dragStartX;
-        const deltaY = currentCanvasY - dragData.dragStartY;
-
-        // Update context with current drag position
-        updateDragPosition(currentCanvasX, currentCanvasY);
-
-        // Mark as dragged if movement is significant - increase threshold for better click detection
-        if (Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5) {
-          dragData.hasDragged = true;
-        }
-
-        // Ensure dragging class is maintained during drag operation
-        const nodeElement = d3.select(this);
-        if (!nodeElement.classed('dragging')) {
-          nodeElement.classed('dragging', true);
-        }
-
-        const newX = dragData.initialX + deltaX;
-        const newY = dragData.initialY + deltaY;
-
-        // Throttle visual updates with debounced RAF
-        updateDraggedNodePositionCallback(d.id, newX, newY);
-
-        // Notify parent component
-        onNodeDrag(d.id, newX, newY);
-      }
-
-      function dragEnded(this: any, event: any, d: WorkflowNode) {
-        const dragData = d as any;
-        const hasDragged = dragData.hasDragged;
-        const dragDuration = Date.now() - (dragData.dragStartTime || 0);
-        const nodeElement = d3.select(this);
-
-        // Calculate final position if dragged
-        if (hasDragged && dragData.initialX !== undefined && dragData.initialY !== undefined) {
-          const svgElement = svgRef.current!;
-          const sourceEvent = event.sourceEvent || event;
-          const [mouseX, mouseY] = d3.pointer(sourceEvent, svgElement);
-          const transform = d3.zoomTransform(svgElement);
-          const [currentCanvasX, currentCanvasY] = transform.invert([mouseX, mouseY]);
-
-          const deltaX = currentCanvasX - dragData.dragStartX;
-          const deltaY = currentCanvasY - dragData.dragStartY;
-
-          // Update node position in data
-          d.x = dragData.initialX + deltaX;
-          d.y = dragData.initialY + deltaY;
-
-          // Update DOM transform to match final position
-          nodeElement.attr('transform', `translate(${d.x}, ${d.y})`);
-
-          // Update node position in parent state
-          onNodeDrag(d.id, d.x, d.y);
-        }
-
-        // Clean up drag state
-        delete dragData.dragStartX;
-        delete dragData.dragStartY;
-        delete dragData.initialX;
-        delete dragData.initialY;
-        delete dragData.hasDragged;
-        delete dragData.dragStartTime;
-
-        // Only end dragging if we're still in drag state to prevent premature cleanup
-        const currentDraggedNodeId = getDraggedNodeId();
-        const isCurrentlyDragging = isContextDragging();
-
-        // Always end dragging first, then clean up DOM
-        if (isCurrentlyDragging && currentDraggedNodeId === d.id) {
-          endDragging();
-        }
-
-        // ALWAYS remove dragging class after drag ends, regardless of state
-        nodeElement.classed('dragging', false);
-
-        // Clear draggedElementRef if it points to this element
-        if (draggedElementRef.current && draggedElementRef.current.node() === this) {
-          draggedElementRef.current = null;
-        }
-
-        // CRITICAL: Clear ALL drag tracking immediately and synchronously
-        // This prevents any lingering drag state from affecting future drags and connection flickering
-        clearAllDragPositions(); // Clear hook's drag positions
-        clearAllDragTracking(); // Clear visual state manager tracking
-        currentDragPositionsRef.current.clear(); // Clear local canvas drag positions
-        connectionUpdateQueueRef.current.clear();
-        visualUpdateQueueRef.current.clear();
-
-        // Cancel any pending RAF updates
-        if (batchedConnectionUpdateRef.current) {
-          cancelAnimationFrame(batchedConnectionUpdateRef.current);
-          batchedConnectionUpdateRef.current = null;
-        }
-        if (batchedVisualUpdateRef.current) {
-          cancelAnimationFrame(batchedVisualUpdateRef.current);
-          batchedVisualUpdateRef.current = null;
-        }
-
-        // Reset visual styles
-        resetNodeVisualStyleCallback(nodeElement, d.id);
-
-        // Reorganize z-index immediately after drag ends to restore proper order
-        zIndexManager.organizeNodeZIndexImmediate(); // immediate layering
-
-        // Force immediate refresh of all connection paths with real positions
-        try {
-          // ENHANCED: Complete state synchronization after node drop
-          // This ensures ALL caches are cleared and ALL connections use committed positions
-          const connectionLayer = getCachedSelection('connectionLayer');
-          if (connectionLayer && connections.length > 0) {
-            // Create additional cache cleanup function to clear all remaining state
-            const additionalCacheCleanup = () => {
-              // Clear z-index state
-              zIndexManager.clearState();
-              // Clear RAF scheduler
-              rafScheduler.clear();
-              // Clear node position cache
-              nodePositionCacheRef.current.clear();
-            };
-
-            // COMPREHENSIVE SYNC: Force complete state reset for ALL connections
-            forceCompleteStateSyncAfterDrop(
-              d.id,
-              connections, // ALL connections, not just affected ones
-              connectionLayer,
-              getConnectionPath,
-              clearConnCache,
-              clearAllDragPositions,
-              additionalCacheCleanup
-            );
-          }
-        } catch (e) {
-          // Keep failures silent but visible in dev
-          if (process.env.NODE_ENV === 'development') {
-            console.warn('dragEnded finalize error', e);
-          }
-        }
-
-        // If no significant drag occurred, treat as click
-        if (!hasDragged && event.sourceEvent && dragDuration < 500) {
-          const ctrlKey = event.sourceEvent.ctrlKey || event.sourceEvent.metaKey;
-          onNodeClick(d, ctrlKey);
-        }
-      }
+      // Local drag handlers removed (extracted to utils/node-drag)
 
       // Connections are rendered in the dedicated connections-only effect.
       // Connection preview is also handled in the connection state effect.
 
       // Render nodes via core function
-      const dragBehavior = d3
-        .drag<SVGGElement, WorkflowNode>()
-        .container(g.node() as any)
-        .clickDistance(5)
-        .on('start', dragStarted)
-        .on('drag', dragged)
-        .on('end', dragEnded);
+      const dragBehavior = createNodeDragBehavior({
+        svgRef,
+        isConnectingRef,
+        dragConnectionDataRef,
+        batchedConnectionUpdateRef,
+        batchedVisualUpdateRef,
+        clearAllDragPositions,
+        clearAllDragTracking,
+        currentDragPositionsRef,
+        connectionUpdateQueueRef,
+        visualUpdateQueueRef,
+        startDragging,
+        updateDragPosition,
+        endDragging,
+        getDraggedNodeId,
+        isContextDragging,
+        getCachedSelection: (type) => getCachedSelection(type),
+        clearConnCache,
+        updateConnDragPos,
+        connections,
+        getConnectionPath,
+        updateDraggedNodePositionCallback,
+        resetNodeVisualStyleCallback,
+        zIndexManager,
+        nodePositionCacheRef,
+        rafScheduler,
+        onNodeDrag,
+        onNodeClick,
+        setDraggedElementRef: (sel) => {
+          draggedElementRef.current = sel;
+        },
+      });
 
       const { nodeEnter, nodeGroups } = createNodeGroups<WorkflowNode>(
         mainNodeLayer as unknown as d3.Selection<SVGGElement, unknown, SVGGElement, unknown>,
@@ -1556,650 +1348,79 @@ function WorkflowCanvas({
         renderConfig: virtualizedWorkflow.levelOfDetail.renderConfig,
       });
 
-      // Legacy badge update removed - badge has been completely removed
-
-      // Render simple ports for both variants - with level-of-detail optimization
+      // Render ports with level-of-detail optimization
       const showPorts = virtualizedWorkflow.levelOfDetail.renderConfig.showPorts;
 
-      // Input ports - DISABLED drag/click interactions for connection creation
-      const inputPortGroups = nodeGroups
-        .select('g.input-ports')
-        .selectAll('.input-port-group')
-        .data(
-          (d: any) => {
-            // Apply level-of-detail: hide ports when zoomed out too far
-            if (!showPorts) {
-              return [];
-            }
-            return d.inputs.map((input: any) => ({
-              ...input,
-              nodeId: d.id,
-              nodeData: d,
-            }));
-          },
-          (d: any) => d.id
-        )
-        .join('g')
-        .attr('data-port-id', (d: any) => d.id)
-        .attr('data-node-id', (d: any) => d.nodeId)
-        .attr('class', 'port-group input-port-group')
-        .attr('role', 'button')
-        .attr('tabindex', -1)
-        .attr('aria-label', (d: any) => `Input port ${d.id} on ${d.nodeData?.label ?? d.nodeId}`)
-        .on('keydown.access', (event: KeyboardEvent, d: any) => {
-          const isEnter = event.key === 'Enter';
-          const isSpace = event.key === ' ' || event.key === 'Spacebar';
-          if (!(isEnter || isSpace)) {
-            return;
-          }
-          if (!(isConnectingRef.current && connectionStartRef.current)) {
-            return;
-          }
-          // Only allow finish when starting from output
-          if (connectionStartRef.current?.type !== 'output') {
-            return;
-          }
-          event.preventDefault();
-          event.stopPropagation();
-          const canDrop = canDropOnPort?.(d.nodeId, d.id, 'input') ?? false;
-          if (canDrop) {
-            const cs = connectionStartRef.current;
-            onPortDragEndProp?.(d.nodeId, d.id, undefined, undefined);
-            dispatch?.({ type: 'CLEAR_CONNECTION_STATE' });
-            if (cs) {
-              announce(`Connected ${cs.nodeId} ${cs.portId} to ${d.nodeId} ${d.id}`);
-            }
-            keyboardConnectingRef.current = false;
-          } else {
-            announce('Invalid target port');
-          }
-        });
+      // Input ports (extracted helper)
+      renderInputPorts(nodeGroups as any, {
+        showPorts,
+        getConfigurableDimensions: getConfigurableDimensions as any,
+        getConfigurablePortPositions: getConfigurablePortPositions as any,
+        canDropOnPort,
+        getIsConnectingActive: () => Boolean(isConnectingRef.current && connectionStartRef.current),
+        getConnectionStart: () => connectionStartRef.current as any,
+        onPortDragEnd: (tNodeId, tPortId, cx, cy) => onPortDragEndProp?.(tNodeId, tPortId, cx, cy),
+        clearConnectionState: () => dispatch?.({ type: 'CLEAR_CONNECTION_STATE' }),
+        announce,
+        setKeyboardConnecting: (v) => {
+          keyboardConnectingRef.current = v;
+        },
+      });
 
-      inputPortGroups.selectAll('circle').remove();
-      inputPortGroups
-        .append('circle')
-        .attr('class', 'port-circle input-port-circle')
-        .attr('cx', (d: any, i: number) => {
-          const positions = getConfigurablePortPositions(d.nodeData, 'input');
-          return positions[i]?.x || 0;
-        })
-        .attr('cy', (d: any, i: number) => {
-          const positions = getConfigurablePortPositions(d.nodeData, 'input');
-          return positions[i]?.y || 0;
-        })
-        .attr('r', (d: any) => getConfigurableDimensions(d.nodeData).portRadius || 6)
-        .attr('fill', getPortColor('any'))
-        .attr('stroke', '#333')
-        .attr('stroke-width', 2)
-        .style('pointer-events', 'none'); // Circle stays non-interactive; group handles keyboard
+      // Input port capacity indicators removed
 
-      //console.log('🔵 Created', inputPortGroups.selectAll('circle').size(), 'input port circles')
-
-      // Port capacity indicators removed - they were cluttering the UI without adding value
-
-      // Output ports
-      const outputPortGroups = nodeGroups
-        .select('g.output-ports')
-        .selectAll('.output-port-group')
-        .data(
-          (d: any) => {
-            // Apply level-of-detail: hide ports when zoomed out too far
-            if (!showPorts) {
-              return [];
-            }
-            return d.outputs.map((output: any) => ({
-              ...output,
-              nodeId: d.id,
-              nodeData: d,
-            }));
-          },
-          (d: any) => d.id
-        )
-        .join('g')
-        .attr('data-port-id', (d: any) => d.id)
-        .attr('data-node-id', (d: any) => d.nodeId)
-        .attr('class', (d: any) => {
-          // Check if this port has any connections
-          const hasConnection = connections.some(
-            (conn: Connection) => conn.sourceNodeId === d.nodeId && conn.sourcePortId === d.id
-          );
-          return hasConnection
-            ? 'port-group output-port-group connected'
-            : 'port-group output-port-group';
-        })
-        .style('cursor', 'crosshair')
-        .style('pointer-events', 'all')
-        .attr('role', 'button')
-        .attr('tabindex', -1)
-        .attr('aria-label', (d: any) => `Output port ${d.id} on ${d.nodeData?.label ?? d.nodeId}`)
-        .on('click', (event: any, d: any) => {
-          // Ignore click-to-start while a drag-connection is active
-          if (isConnectingRef.current || dragConnectionDataRef.current) {
-            event.stopPropagation();
-            return;
-          }
-          event.stopPropagation();
-          onPortClick(d.nodeId, d.id, 'output');
-          announce(
-            `Connection started from ${d.nodeData?.label ?? d.nodeId} output ${d.id}. Tab to an input port and press Enter to connect, or press Escape to cancel.`
-          );
-        })
-        .on('keydown.access', (event: KeyboardEvent, d: any) => {
-          const isEnter = event.key === 'Enter';
-          const isSpace = event.key === ' ' || event.key === 'Spacebar';
-          if (!(isEnter || isSpace)) {
-            return;
-          }
-          if (isConnectingRef.current) {
-            return;
-          }
-          event.preventDefault();
-          event.stopPropagation();
-          // Start keyboard-driven connection
-          dragConnectionDataRef.current = { nodeId: d.nodeId, portId: d.id, type: 'output' };
-          dispatch?.({
-            type: 'START_CONNECTION',
-            payload: { nodeId: d.nodeId, portId: d.id, type: 'output' },
-          });
-          keyboardConnectingRef.current = true;
-          announce(
-            `Connection started from ${d.nodeData?.label ?? d.nodeId} output ${d.id}. Tab to an input port and press Enter to connect, or press Escape to cancel.`
-          );
-          // Move focus hint: next tabbable element is likely an input port group; tab order is global
-        })
-        .call(
-          d3
-            .drag<any, any>()
-            .clickDistance(4)
-            .on('start', makePortDragHandlers({ logTag: 'Output port' }).onStart)
-            .on('drag', makePortDragHandlers({ logTag: 'Output port' }).onDrag)
-            .on('end', makePortDragHandlers({ logTag: 'Output port' }).onEnd)
-        );
-
-      // Create output port circles
-      outputPortGroups.selectAll('circle').remove();
-      outputPortGroups
-        .append('circle')
-        .attr('class', 'port-circle output-port-circle')
-        .attr('cx', (d: any, i: number) => {
-          const positions = getConfigurablePortPositions(d.nodeData, 'output');
-          return positions[i]?.x || 0;
-        })
-        .attr('cy', (d: any, i: number) => {
-          const positions = getConfigurablePortPositions(d.nodeData, 'output');
-          return positions[i]?.y || 0;
-        })
-        .attr('r', (d: any) => getConfigurableDimensions(d.nodeData).portRadius || 6)
-        .attr('fill', getPortColor('any'))
-        .attr('stroke', '#8d8d8d')
-        .attr('stroke-width', 2);
-
-      //console.log('🔴 Created', outputPortGroups.selectAll('circle').size(), 'output port circles')
-
-      // Output port capacity indicators removed - they were cluttering the UI without adding value
+      // Output ports (extracted helper)
+      renderOutputPorts(nodeGroups as any, {
+        showPorts,
+        connections,
+        nodeVariant,
+        onPortClick,
+        announce,
+        getConfigurableDimensions: getConfigurableDimensions as any,
+        getConfigurablePortPositions: getConfigurablePortPositions as any,
+        getIsConnectingActive: () => Boolean(isConnectingRef.current),
+        hasLocalDragConnection: () => Boolean(dragConnectionDataRef.current),
+        setLocalDragConnection: (v) => {
+          dragConnectionDataRef.current = v as any;
+        },
+        dispatch,
+        makePortDragHandlers,
+      });
 
       // Architecture mode: four side ports (top/right/bottom/left) as virtual ports
       const isArchitectureMode = workflowContextState.designerMode === 'architecture';
-      const sidePortGroups = nodeGroups
-        .select('g.side-ports')
-        .selectAll('.side-port-group')
-        .data((d: any) => {
-          if (!isArchitectureMode || !showPorts) {
-            return [];
-          }
-          const dim = getConfigurableDimensions(d);
-          const halfW = (dim.width || NODE_WIDTH) / 2;
-          const halfH = (dim.height || NODE_MIN_HEIGHT) / 2;
-          // Define side ports with local positions (relative to node center)
-          const sides = [
-            { id: '__side-top', x: 0, y: -halfH, kind: 'input' },
-            { id: '__side-right', x: halfW, y: 0, kind: 'output' },
-            { id: '__side-bottom', x: 0, y: halfH, kind: 'output' },
-            { id: '__side-left', x: -halfW, y: 0, kind: 'input' },
-          ];
-          // Business rule:
-          // - If node has inputs, hide left side port (input)
-          // - If node has outputs, hide right side port (output)
-          const hasMultipleInputs = Array.isArray(d.inputs) && d.inputs.length > 1;
-          const hasMultipleOutputs = Array.isArray(d.outputs) && d.outputs.length > 1;
-          const filtered = sides.filter((s) => {
-            if (s.id === '__side-left' && hasMultipleInputs) {
-              return false;
-            }
-            if (s.id === '__side-right' && hasMultipleOutputs) {
-              return false;
-            }
-            return true;
-          });
-          return filtered.map((s) => ({
-            nodeId: d.id,
-            nodeData: d,
-            id: s.id,
-            kind: s.kind,
-            x: s.x,
-            y: s.y,
-          }));
-        })
-        .join('g')
-        .attr('class', (d: any) => {
-          // Treat side ports as omni-ports: highlight for both input/output multiplicity and connected state
-          const isConnected = connections.some(
-            (conn: Connection) =>
-              (conn.sourceNodeId === d.nodeId && conn.sourcePortId === d.id) ||
-              (conn.targetNodeId === d.nodeId && conn.targetPortId === d.id)
-          );
-          const inputHL = getPortHighlightClass(
-            d.nodeId,
-            d.id,
-            'input',
-            connections,
-            workflowContextState.designerMode
-          );
-          const outputHL = getPortHighlightClass(
-            d.nodeId,
-            d.id,
-            'output',
-            connections,
-            workflowContextState.designerMode
-          );
-          const classes = ['side-port-group', 'port-group'];
-          // Architecture mode rule update:
-          // - Always keep side-ports as 'side-port-group' only (no input-port-group/output-port-group)
-          if (isConnected) {
-            classes.push('connected');
-          }
-          if (inputHL) {
-            classes.push(inputHL);
-          }
-          if (outputHL) {
-            classes.push(outputHL);
-          }
-          return classes.join(' ');
-        })
-        .style('cursor', 'crosshair')
-        .style('pointer-events', 'all')
-        .on('click', (event: any, d: any) => {
-          // Click-to-start like output ports
-          event.stopPropagation();
-          onPortClick(d.nodeId, d.id, d.kind === 'input' ? 'input' : 'output');
-        })
-        .call(
-          d3
-            .drag<any, any>()
-            .clickDistance(4)
-            .on('start', makePortDragHandlers().onStart)
-            .on('drag', makePortDragHandlers().onDrag)
-            .on('end', makePortDragHandlers().onEnd)
-        );
-
-      // Draw side port rectangles
-      sidePortGroups.selectAll('rect').remove();
-      sidePortGroups
-        .append('rect')
-        .attr('class', 'side-port-rect')
-        .attr('x', (d: any) => d.x - 6)
-        .attr('y', (d: any) => d.y - 6)
-        .attr('width', 12)
-        .attr('height', 12)
-        .attr('rx', 2)
-        .attr('ry', 2)
-        .attr('fill', '#CCCCCC')
-        .attr('stroke', '#8d8d8d')
-        .attr('stroke-width', 1.5)
-        .style('pointer-events', 'all'); // allow hit-testing so group drag handlers receive events
+      renderSidePorts(nodeGroups as any, {
+        isArchitectureMode,
+        showPorts,
+        connections,
+        getConfigurableDimensions: getConfigurableDimensions as any,
+        nodeVariant,
+        modeId: workflowContextState.designerMode as any,
+        onPortClick,
+        makePortDragHandlers,
+      });
 
       // Bottom ports - สำหรับ AI Agent nodes ที่มี bottomPorts
-      const bottomPortGroups = nodeGroups
-        .filter((d: any) => d.bottomPorts && d.bottomPorts.length > 0)
-        .select('g.bottom-ports')
-        .selectAll('.bottom-port-group')
-        .data(
-          (d: any) => {
-            // Apply level-of-detail: hide ports when zoomed out too far
-            if (!showPorts || !d.bottomPorts) {
-              return [];
-            }
-            return d.bottomPorts.map((port: any) => ({
-              ...port,
-              nodeId: d.id,
-              nodeData: d,
-            }));
-          },
-          (d: any) => d.id
-        )
-        .join('g')
-        .attr('data-port-id', (d: any) => d.id)
-        .attr('data-node-id', (d: any) => d.nodeId)
-        .attr('class', 'bottom-port-group')
-        .style('cursor', 'crosshair')
-        .style('pointer-events', 'all')
-        // Add drag behavior for bottom port diamonds
-        .call(
-          d3
-            .drag<any, any>()
-            .clickDistance(4)
-            .on(
-              'start',
-              makePortDragHandlers({ logTag: 'Bottom port diamond', requireTargetOnEnd: true })
-                .onStart
-            )
-            .on(
-              'drag',
-              makePortDragHandlers({ logTag: 'Bottom port diamond', requireTargetOnEnd: true })
-                .onDrag
-            )
-            .on(
-              'end',
-              makePortDragHandlers({ logTag: 'Bottom port diamond', requireTargetOnEnd: true })
-                .onEnd
-            )
-        );
-
-      // Create bottom port diamonds
-      bottomPortGroups.selectAll('path').remove();
-      bottomPortGroups
-        .append('path')
-        .attr('class', 'bottom-port-diamond')
-        .attr('d', (d: any) => {
-          const size = getConfigurableDimensions(d.nodeData).portRadius || 6;
-          // Create diamond shape: move to top, line to right, line to bottom, line to left, close
-          return `M 0,${-size} L ${size},0 L 0,${size} L ${-size},0 Z`;
-        })
-        .attr('transform', (d: any) => {
-          // Use shared util to get absolute bottom port position, then convert to node-relative
-          const abs = calculatePortPosition(d.nodeData, d.id, 'bottom', nodeVariant);
-          const relX = abs.x - d.nodeData.x;
-          const relY = abs.y - d.nodeData.y;
-          return `translate(${relX}, ${relY})`;
-        })
-        .attr('fill', (d: any) => {
-          if (isConnecting && connectionStart && connectionStart.type === 'output') {
-            const canDrop = canDropOnPort ? canDropOnPort(d.nodeId, d.id, 'input') : false;
-            return canDrop ? '#4CAF50' : '#ff5722';
-          }
-          return '#A8A9B4'; // Beautiful pastel gray tone
-        })
-        .attr('stroke', 'none'); // No border
-
-      // Add connector lines from bottom ports (only for ports without connections OR when node is selected)
-      bottomPortGroups.selectAll('line').remove();
-      bottomPortGroups
-        .append('line')
-        .attr('class', 'bottom-port-connector')
-        .attr('x1', (d: any) => {
-          const abs = calculatePortPosition(d.nodeData, d.id, 'bottom', nodeVariant);
-          return abs.x - d.nodeData.x;
-        })
-        .attr('y1', (d: any) => {
-          const abs = calculatePortPosition(d.nodeData, d.id, 'bottom', nodeVariant);
-          return abs.y - d.nodeData.y;
-        })
-        .attr('x2', (d: any) => {
-          const abs = calculatePortPosition(d.nodeData, d.id, 'bottom', nodeVariant);
-          return abs.x - d.nodeData.x;
-        })
-        .attr('y2', (d: any) => {
-          const abs = calculatePortPosition(d.nodeData, d.id, 'bottom', nodeVariant);
-          const posY = abs.y - d.nodeData.y;
-          const hasConnection = connections.some(
-            (conn: Connection) => conn.sourceNodeId === d.nodeId && conn.sourcePortId === d.id
-          );
-          const nodeIsSelected = isNodeSelected(d.nodeId);
-          let shouldShowLine = false;
-          if (!hasConnection) {
-            shouldShowLine = true;
-          } else if (nodeIsSelected) {
-            shouldShowLine = canBottomPortAcceptConnection(
-              d.nodeId,
-              d.id,
-              connections,
-              nodeMap,
-              workflowContextState.designerMode
-            );
-          }
-          return shouldShowLine ? posY + 16 : posY;
-        })
-        .attr('stroke', (d: any) => {
-          // Different colors for selected nodes based on connection capability
-          const nodeIsSelected = isNodeSelected(d.nodeId);
-          const hasConnection = connections.some(
-            (conn: Connection) => conn.sourceNodeId === d.nodeId && conn.sourcePortId === d.id
-          );
-
-          if (nodeIsSelected && hasConnection) {
-            const canAcceptMore = canBottomPortAcceptConnection(
-              d.nodeId,
-              d.id,
-              connections,
-              nodeMap,
-              workflowContextState.designerMode
-            );
-            if (canAcceptMore) {
-              return '#4CAF50'; // Green for ports that can accept more connections (like 'tool')
-            }
-          }
-          return '#A8A9B4'; // Default pastel gray
-        })
-        .attr('stroke-width', (d: any) => {
-          const nodeIsSelected = isNodeSelected(d.nodeId);
-          const hasConnection = connections.some(
-            (conn: Connection) => conn.sourceNodeId === d.nodeId && conn.sourcePortId === d.id
-          );
-
-          if (nodeIsSelected && hasConnection) {
-            return 3; // Thicker line for selected nodes with connections
-          }
-          return 2; // Default thickness
-        })
-        .style('pointer-events', 'none');
-
-      // Add plus buttons and labels to bottom port groups (integrated approach)
-      bottomPortGroups.each(function (d: any) {
-        const group = d3.select(this);
-
-        // Check if this bottom port already has a connection
-        const hasConnection = connections.some(
-          (conn: Connection) => conn.sourceNodeId === d.nodeId && conn.sourcePortId === d.id
-        );
-
-        const nodeIsSelected = isNodeSelected(d.nodeId);
-
-        // Determine if plus button should be shown
-        let shouldShowButton = false;
-
-        if (nodeIsSelected) {
-          // When node is selected, show plus button only for ports that can accept additional connections
-          shouldShowButton = canBottomPortAcceptConnection(
-            d.nodeId,
-            d.id,
-            connections,
-            nodeMap,
-            workflowContextState.designerMode
-          );
-          if (process.env.NODE_ENV === 'development') {
-            dbg.warn(
-              `🔍 Port ${d.id} on selected node ${d.nodeId}: canAccept=${shouldShowButton}, hasConnection=${hasConnection}`
-            );
-          }
-        } else {
-          // When node is not selected, show only for unconnected ports (original behavior)
-          shouldShowButton = !hasConnection;
-        }
-
-        // Remove existing plus button and label
-        group.selectAll('.plus-button-container').remove();
-        group.selectAll('.bottom-port-label-container').remove();
-
-        // Add plus button if needed
-        if (shouldShowButton) {
-          const node = nodes.find((n: WorkflowNode) => n.id === d.nodeId);
-          if (node) {
-            const abs = calculatePortPosition(d.nodeData, d.id, 'bottom', nodeVariant);
-            const x = abs.x - d.nodeData.x;
-            const y = abs.y - d.nodeData.y + 36; // Beyond the connector line
-
-            const plusButtonContainer = group
-              .append('g')
-              .attr('class', 'plus-button-container')
-              .attr('transform', `translate(${x}, ${y})`)
-              .style('cursor', 'crosshair')
-              .style('pointer-events', 'all');
-
-            const plusButton = plusButtonContainer
-              .append('g')
-              .attr('class', 'plus-button')
-              .style('cursor', 'crosshair')
-              .style('pointer-events', 'all')
-              .call(
-                d3
-                  .drag<any, any>()
-                  .clickDistance(4)
-                  .on('start', (event: any) => {
-                    dbg.warn('🚀 Plus button drag START:', d.nodeId, d.id);
-                    event.sourceEvent.stopPropagation();
-                    event.sourceEvent.preventDefault();
-
-                    // Start connection from bottom port
-                    onPortDragStart(d.nodeId, d.id, 'output');
-                  })
-                  .on('drag', (event: any) => {
-                    // Get canvas coordinates
-                    const [x, y] = d3.pointer(
-                      event.sourceEvent,
-                      event.sourceEvent.target.ownerSVGElement
-                    );
-                    const transform = d3.zoomTransform(event.sourceEvent.target.ownerSVGElement);
-                    const [canvasX, canvasY] = transform.invert([x, y]);
-
-                    // Update connection preview
-                    onPortDrag(canvasX, canvasY);
-                  })
-                  .on('end', (event: any) => {
-                    dbg.warn('🚀 Plus button drag END');
-                    const svgElement = event.sourceEvent.target.ownerSVGElement as SVGSVGElement;
-                    const currentTransform = d3.zoomTransform(svgElement);
-                    const [screenX, screenY] = d3.pointer(event.sourceEvent, svgElement);
-                    const [canvasX, canvasY] = currentTransform.invert([screenX, screenY]);
-                    const result = resolveDragEndTarget(
-                      svgElement,
-                      canvasX,
-                      canvasY,
-                      nodes,
-                      null,
-                      getHitTestPortRadius
-                    );
-                    if (result.nodeId && result.portId) {
-                      onPortDragEnd(result.nodeId, result.portId, canvasX, canvasY);
-                    } else {
-                      onPortDragEnd(undefined, undefined, canvasX, canvasY);
-                    }
-                  })
-              )
-              .on('click', (event: any) => {
-                // Fallback click handler for simple plus button clicks
-                event.stopPropagation();
-                onPlusButtonClick?.(d.nodeId, d.id);
-              });
-            // Removed mouseenter/mouseleave hover effects to prevent highlights during node interactions
-
-            // Plus button background (square with rounded corners)
-            plusButton
-              .append('rect')
-              .attr('class', 'plus-button-bg')
-              .attr('x', -8)
-              .attr('y', -8)
-              .attr('width', 16)
-              .attr('height', 16)
-              .attr('rx', 2)
-              .attr('ry', 2)
-              .attr('fill', () => {
-                // Different colors based on port type and connection capability
-                if (hasConnection) {
-                  // For connected ports that still allow more connections (like 'tool')
-                  return '#4CAF50'; // Green for ports that can accept multiple connections
-                }
-                return '#8A8B96'; // Gray for unconnected ports
-              })
-              .attr('stroke', () => {
-                // Add border for connected ports to make them more visible
-                if (hasConnection && nodeIsSelected) {
-                  return '#388E3C'; // Darker green border for multi-connection ports
-                }
-                return 'none';
-              })
-              .attr('stroke-width', () => {
-                if (hasConnection && nodeIsSelected) {
-                  return 1;
-                }
-                return 0;
-              });
-
-            // Plus symbol (horizontal line)
-            plusButton
-              .append('line')
-              .attr('class', 'plus-horizontal')
-              .attr('x1', -4)
-              .attr('y1', 0)
-              .attr('x2', 4)
-              .attr('y2', 0)
-              .attr('stroke', 'white')
-              .attr('stroke-width', 1.5)
-              .attr('stroke-linecap', 'round');
-
-            // Plus symbol (vertical line)
-            plusButton
-              .append('line')
-              .attr('class', 'plus-vertical')
-              .attr('x1', 0)
-              .attr('y1', -4)
-              .attr('x2', 0)
-              .attr('y2', 4)
-              .attr('stroke', 'white')
-              .attr('stroke-width', 1.5)
-              .attr('stroke-linecap', 'round');
-          }
-        }
-
-        // Add label for this bottom port
-        const abs = calculatePortPosition(d.nodeData, d.id, 'bottom', nodeVariant);
-        const labelX = abs.x - d.nodeData.x;
-        const labelY = abs.y - d.nodeData.y + 15; // Below the diamond
-
-        const labelContainer = group
-          .append('g')
-          .attr('class', 'bottom-port-label-container')
-          .attr('transform', `translate(${labelX}, ${labelY})`);
-
-        // Label background
-        const labelText = d.label || d.id;
-        const textWidth = labelText.length * 5.5; // Better estimation for 10px font
-        const padding = 8;
-
-        labelContainer
-          .append('rect')
-          .attr('class', 'bottom-port-label-bg')
-          .attr('x', -textWidth / 2 - padding / 2)
-          .attr('y', -7)
-          .attr('width', textWidth + padding)
-          .attr('height', 12)
-          .attr('fill', '#ffffff5b')
-          .attr('stroke', 'none'); // Prevent stroke inheritance from parent node
-
-        // Label text
-        labelContainer
-          .append('text')
-          .attr('class', 'bottom-port-label')
-          .attr('x', 0)
-          .attr('y', 0)
-          .attr('text-anchor', 'middle')
-          .attr('dominant-baseline', 'middle')
-          .attr('font-size', '8px')
-          .attr('font-weight', '500')
-          .attr('fill', '#2c3e50')
-          .attr('stroke', 'none') // Prevent stroke inheritance from parent node
-          .attr('pointer-events', 'none')
-          .style('user-select', 'none')
-          .text(labelText);
+      renderBottomPorts(nodeGroups as any, {
+        showPorts,
+        connections,
+        nodeVariant,
+        isConnecting,
+        connectionStart,
+        canDropOnPort,
+        isNodeSelected,
+        nodeMap,
+        modeId: workflowContextState.designerMode as any,
+        getConfigurableDimensions: getConfigurableDimensions as any,
+        onPortDragStart,
+        onPortDrag,
+        onPortDragEnd,
+        getHitTestPortRadius,
+        canBottomPortAcceptConnection: (nodeId, portId, conns, map, modeId) =>
+          canBottomPortAcceptConnection(nodeId, portId, conns, map, modeId as any),
+        resolveDragEndTarget,
+        nodes,
+        dbg,
       });
 
       // Canvas event handlers

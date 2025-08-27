@@ -688,6 +688,30 @@ export function generateModeAwareConnectionPath(
   )
 }
 
+/**
+ * Return mode-aware port anchors (source/target positions) for a given connection.
+ * Useful for external consumers that need stable endpoints without duplicating logic.
+ */
+export function getModeAwarePortAnchors(
+  connection: { sourceNodeId: string; sourcePortId: string; targetNodeId: string; targetPortId: string },
+  nodes: WorkflowNode[],
+  _variant: NodeVariant = 'standard',
+  modeId: DesignerMode = 'workflow'
+): { source: PortPosition; target: PortPosition } | null {
+  const sourceNode = nodes.find(n => n.id === connection.sourceNodeId)
+  const targetNode = nodes.find(n => n.id === connection.targetNodeId)
+  if (!sourceNode || !targetNode) { return null }
+
+  const isSourceBottom = isBottomPort(sourceNode, connection.sourcePortId) || connection.sourcePortId === '__side-bottom'
+  const isTargetBottom = isBottomPort(targetNode, connection.targetPortId) || connection.targetPortId === '__side-bottom'
+  const sourceType: PortType = isSourceBottom ? 'bottom' : 'output'
+  const targetType: PortType = isTargetBottom ? 'bottom' : 'input'
+
+  const sourcePos = getModeAwarePortPosition(sourceNode, connection.sourcePortId, sourceType, modeId)
+  const targetPos = getModeAwarePortPosition(targetNode, connection.targetPortId, targetType, modeId)
+  return { source: sourcePos, target: targetPos }
+}
+
 // Extracted to reduce cognitive complexity of generateModeAwareConnectionPath
 function generateArchitectureModeConnectionPath(
   sourceNode: WorkflowNode,
@@ -862,6 +886,176 @@ function generateArchitectureModeConnectionPath(
     const minLeft = Math.min(sourcePos.x, forcedLeftPos.x) - FIXED_LEAD_LENGTH
     const midX = Math.min(boxesLeft - safeClear, minLeft)
     // Align end to the exact target port Y then trim using shared helper and round corners
+    const leftAligned = { x: forcedLeftPos.x, y: targetPos.y }
+    const leftUTrimmedEnd = trimPointBySide(leftAligned, '__side-left', sourcePos, HALF_MARKER)
+    const points = [
+      { x: sourcePos.x, y: sourcePos.y },
+      { x: midX, y: sourcePos.y },
+      { x: midX, y: leftUTrimmedEnd.y },
+      { x: leftUTrimmedEnd.x, y: leftUTrimmedEnd.y }
+    ]
+    return buildRoundedPathFromPoints(points, 10)
+  }
+  const leftU = maybeLeftU(); if (leftU) { return leftU }
+
+  return generateAdaptiveOrthogonalRoundedPathSmart(sourcePos, trimmedEnd, 16, {
+    clearance: 10,
+    targetBox: cachedBuildNodeBoxModeAware(targetNode),
+    startOrientationOverride: startOrientation,
+    endOrientationOverride: endOrientation
+  })
+}
+
+/**
+ * Architecture path generator with explicit target side override.
+ * This is used by hooks to implement "sticky side" with hysteresis to avoid one-frame jumps.
+ */
+export function generateArchitectureModeConnectionPathWithTargetSide(
+  sourceNode: WorkflowNode,
+  targetNode: WorkflowNode,
+  connection: { sourceNodeId: string; sourcePortId: string; targetNodeId: string; targetPortId: string },
+  targetSidePortId: SidePortId
+): string {
+  // Lightweight caches
+  const boxCache = new Map<WorkflowNode, { x: number; y: number; width: number; height: number }>()
+  const portPosCache = new WeakMap<WorkflowNode, Map<string, { x: number; y: number }>>()
+  const cachedBuildNodeBoxModeAware = (node: WorkflowNode) => {
+    const hit = boxCache.get(node)
+    if (hit) { return hit }
+    const box = buildNodeBoxModeAware(node, 'architecture')
+    boxCache.set(node, box)
+    return box
+  }
+  const cachedSidePort = (node: WorkflowNode, side: SidePortId) => {
+    let inner = portPosCache.get(node)
+    if (!inner) { inner = new Map<string, { x: number; y: number }>(); portPosCache.set(node, inner) }
+    const key = `${side}|architecture`
+    const hit = inner.get(key)
+    if (hit) { return hit }
+    const pos = getVirtualSidePortPositionForMode(node, side, 'architecture')
+    inner.set(key, pos)
+    return pos
+  }
+
+  const isSourceBottom = isBottomPort(sourceNode, connection.sourcePortId) || connection.sourcePortId === '__side-bottom'
+  const isTargetBottom = isBottomPort(targetNode, connection.targetPortId) || connection.targetPortId === '__side-bottom'
+  const sourceType = isSourceBottom ? 'bottom' : 'output'
+  const targetType = isTargetBottom ? 'bottom' : 'input'
+  const sourceDims = getModeAwareDimensions(sourceNode, 'architecture')
+  const targetDims = getModeAwareDimensions(targetNode, 'architecture')
+
+  const computeArchPortPos = (node: WorkflowNode, portId: string, portType: PortType, dims: { width: number; height: number }): PortPosition => {
+    if (isVirtualSidePortId(portId)) { return getVirtualSidePortPositionForMode(node, portId, 'architecture') }
+    if (portType === 'bottom') {
+      const ports = node.bottomPorts || []
+      const idx = Math.max(0, ports.findIndex(p => p.id === portId))
+      const count = ports.length
+      const usableWidth = Math.min(dims.width * 0.8, dims.width - 70)
+      if (count === 2) {
+        const spacing = usableWidth / 3; const positions = [-spacing, spacing]
+        return { x: node.x + (positions[idx] || 0), y: node.y + dims.height / 2 }
+      }
+      if (count === 3) {
+        const half = usableWidth / 2; const positions = [-half, 0, half]
+        return { x: node.x + (positions[idx] || 0), y: node.y + dims.height / 2 }
+      }
+      if (count >= 4) {
+        const spacing = usableWidth / (count - 1)
+        const relX = -usableWidth / 2 + spacing * idx
+        return { x: node.x + relX, y: node.y + dims.height / 2 }
+      }
+      return { x: node.x, y: node.y + dims.height / 2 }
+    }
+    const ports = portType === 'input' ? node.inputs : node.outputs
+    const idx = Math.max(0, ports.findIndex(p => p.id === portId))
+    const count = ports.length || 1
+    const spacing = dims.height / (count + 1)
+    const y = -dims.height / 2 + spacing * (idx + 1)
+    const x = portType === 'input' ? -dims.width / 2 : dims.width / 2
+    return { x: node.x + x, y: node.y + y }
+  }
+
+  const sourcePos = computeArchPortPos(sourceNode, connection.sourcePortId, sourceType, sourceDims)
+  const targetPos = computeArchPortPos(targetNode, connection.targetPortId, targetType, targetDims)
+  if (!validatePathInputs(sourcePos, targetPos)) { return '' }
+
+  const startSide = detectPortSideModeAware(sourceNode, connection.sourcePortId, sourcePos, 'architecture')
+  const startOrientation = sideToOrientation(startSide)
+
+  // Align end point to the exact target port position, using the overridden side anchor
+  const sideAnchor = getVirtualSidePortPositionForMode(targetNode, targetSidePortId, 'architecture')
+  const preciseEnd: { x: number; y: number } = ((): { x: number; y: number } => {
+    switch (targetSidePortId) {
+      case '__side-left':
+      case '__side-right':
+        return { x: sideAnchor.x, y: targetPos.y } // lock to side X, keep exact port Y
+      case '__side-top':
+      case '__side-bottom':
+      default: {
+        const isActualBottomTarget = isTargetBottom
+        const endX = isActualBottomTarget ? targetPos.x : sideAnchor.x
+        return { x: endX, y: sideAnchor.y }
+      }
+    }
+  })()
+  const endOrientation = sideToOrientation(detectPortSideModeAware(targetNode, targetSidePortId, preciseEnd, 'architecture'))
+
+  const HALF_MARKER = 5
+  const trimmedEnd = trimPointBySide(preciseEnd, targetSidePortId, sourcePos, HALF_MARKER)
+
+  // Bottom U-shape special-case
+  if (isSourceBottom && targetSidePortId === '__side-bottom') {
+    const srcBox = cachedBuildNodeBoxModeAware(sourceNode)
+    const tgtBox = cachedBuildNodeBoxModeAware(targetNode)
+    const safeClear = 16
+    const boxesBottom = Math.max(srcBox.y + srcBox.height, tgtBox.y + tgtBox.height)
+    const minBelow = Math.max(sourcePos.y, preciseEnd.y) + FIXED_LEAD_LENGTH
+    const midY = Math.max(boxesBottom + safeClear, minBelow)
+    const bottomUTrimmedEnd = trimPointBySide(preciseEnd, '__side-bottom', sourcePos, HALF_MARKER)
+    const points = [
+      { x: sourcePos.x, y: sourcePos.y },
+      { x: sourcePos.x, y: midY },
+      { x: bottomUTrimmedEnd.x, y: midY },
+      { x: bottomUTrimmedEnd.x, y: bottomUTrimmedEnd.y }
+    ]
+    return buildRoundedPathFromPoints(points, 10)
+  }
+
+  // Horizontal U-shapes for close proximity (mirror logic from base function)
+  const maybeRightU = (): string | null => {
+    if (startSide !== 'right' || targetSidePortId !== '__side-right') { return null }
+    const forcedRightPos = cachedSidePort(targetNode, '__side-right')
+    const isCloseHorizontally = (targetNode.x - sourcePos.x) < FIXED_LEAD_LENGTH
+    if (!isCloseHorizontally) { return null }
+    const srcBox = cachedBuildNodeBoxModeAware(sourceNode)
+    const tgtBox = cachedBuildNodeBoxModeAware(targetNode)
+    const safeClear = 16
+    const boxesRight = Math.max(srcBox.x + srcBox.width, tgtBox.x + tgtBox.width)
+    const minRight = Math.max(sourcePos.x, forcedRightPos.x) + FIXED_LEAD_LENGTH
+    const midX = Math.max(boxesRight + safeClear, minRight)
+    const rightAligned = { x: forcedRightPos.x, y: targetPos.y }
+    const rightUTrimmedEnd = trimPointBySide(rightAligned, '__side-right', sourcePos, HALF_MARKER)
+    const points = [
+      { x: sourcePos.x, y: sourcePos.y },
+      { x: midX, y: sourcePos.y },
+      { x: midX, y: rightUTrimmedEnd.y },
+      { x: rightUTrimmedEnd.x, y: rightUTrimmedEnd.y }
+    ]
+    return buildRoundedPathFromPoints(points, 10)
+  }
+  const rightU = maybeRightU(); if (rightU) { return rightU }
+
+  const maybeLeftU = (): string | null => {
+    if (startSide !== 'left' || targetSidePortId !== '__side-left') { return null }
+    const forcedLeftPos = cachedSidePort(targetNode, '__side-left')
+    const isCloseHorizontally = (sourcePos.x - targetNode.x) < FIXED_LEAD_LENGTH
+    if (!isCloseHorizontally) { return null }
+    const srcBox = cachedBuildNodeBoxModeAware(sourceNode)
+    const tgtBox = cachedBuildNodeBoxModeAware(targetNode)
+    const safeClear = 16
+    const boxesLeft = Math.min(srcBox.x, tgtBox.x)
+    const minLeft = Math.min(sourcePos.x, forcedLeftPos.x) - FIXED_LEAD_LENGTH
+    const midX = Math.min(boxesLeft - safeClear, minLeft)
     const leftAligned = { x: forcedLeftPos.x, y: targetPos.y }
     const leftUTrimmedEnd = trimPointBySide(leftAligned, '__side-left', sourcePos, HALF_MARKER)
     const points = [
