@@ -95,12 +95,11 @@ export function useConnectionPaths(
 
   const getConnectionPath = useCallback(
     (connection: Connection, useDragPositions = false): string => {
-      // CRITICAL FIX: Only use drag positions if explicitly requested AND they exist
-      // This prevents flickering from stale drag position references
-      const effectiveUseDrag = useDragPositions;
+      // CRITICAL FIX: Take atomic snapshot of current state to prevent race conditions
+      const dragSnapshot = new Map(dragPositionsRef.current);
+      let effectiveUseDrag = useDragPositions;
 
       // Simplified cache key without drag suffix to maintain consistency
-      // Drag positions will naturally invalidate the cache when nodes move
       const cacheKey = `${connection.id}-${connection.sourceNodeId}-${connection.sourcePortId}-${connection.targetNodeId}-${connection.targetPortId}-${nodeVariant}-${modeId || 'workflow'}`;
 
       if (!effectiveUseDrag) {
@@ -116,30 +115,33 @@ export function useConnectionPaths(
         return '';
       }
 
-      let nodesForPath = nodes;
+      // ENHANCED: Build position-consistent nodes array with atomic snapshot
+      let nodesForPath: WorkflowNode[] = nodes;
       if (effectiveUseDrag) {
-        // CRITICAL FIX: Only apply drag positions if they exist for the specific connection nodes
-        // This prevents using stale positions from previous drags
-        const srcDrag = dragPositionsRef.current.get(connection.sourceNodeId);
-        const tgtDrag = dragPositionsRef.current.get(connection.targetNodeId);
+        // Use atomic snapshot to prevent race conditions between source/target position updates
+        const srcDrag = dragSnapshot.get(connection.sourceNodeId);
+        const tgtDrag = dragSnapshot.get(connection.targetNodeId);
 
-        // Only modify nodes if we have current drag positions for them
+        // Only create modified array if we actually have drag positions to apply
         if (srcDrag || tgtDrag) {
           nodesForPath = nodes.map((n) => {
-            // Only override position if we have a current drag position for this specific node
+            // Apply drag position if available for this specific node
             if (srcDrag && n.id === connection.sourceNodeId) {
               return { ...n, x: srcDrag.x, y: srcDrag.y };
             }
             if (tgtDrag && n.id === connection.targetNodeId) {
               return { ...n, x: tgtDrag.x, y: tgtDrag.y };
             }
-            // Use committed position from nodes array for all other nodes
+            // Use committed position for all other nodes
             return n;
           });
+        } else {
+          // If no drag positions available, fall back to committed positions
+          effectiveUseDrag = false;
         }
       }
 
-      // Slightly increase arrow offset for workflow mode to add end clearance on curves.
+      // Generate path with position-consistent node data
       const path = generateModeAwareConnectionPath(
         {
           sourceNodeId: connection.sourceNodeId,
@@ -156,7 +158,8 @@ export function useConnectionPaths(
 
       const finalPath = path;
 
-      if (!effectiveUseDrag) {
+      // Cache result only if using committed positions
+      if (!useDragPositions) {
         pathCacheRef.current.set(cacheKey, finalPath);
         cleanupCacheIfNeeded();
       }

@@ -48,6 +48,7 @@ export interface DragPositionConfig {
     lastDragUpdate: { current: number }
     dragUpdateThrottle: number
     startBatchedConnectionUpdates: () => void
+    startLiveDragConnectionUpdates: () => void
 }
 
 export interface VisualCacheConfig {
@@ -177,13 +178,13 @@ export function processBatchedConnectionUpdates(
             }))
             .filter(({ element }) => !element.empty())
 
-        // Update all paths in a single batch (no-op if path unchanged)
+        // CRITICAL FIX: Always use committed positions only
+        // This prevents stale drag positions from affecting connection rendering
         connectionElements.forEach(({ conn, element }) => {
             const pathElement = element.select('.connection-path')
-            // CRITICAL FIX: Only use drag positions if this connection involves the currently dragged node
-            // This prevents using stale drag positions from previous drag operations
-            const shouldUseDragPositions = nodeId === conn.sourceNodeId || nodeId === conn.targetNodeId
-            const newPath = getConnectionPath(conn, shouldUseDragPositions)
+            // FIXED: Always use committed positions (useDragPositions = false)
+            // This ensures connections always reflect the actual node positions
+            const newPath = getConnectionPath(conn, false)
             const oldPath = pathElement.attr('d')
             if (oldPath !== newPath) {
                 pathElement.attr('d', newPath)
@@ -205,6 +206,70 @@ export function processBatchedConnectionUpdates(
     }
 
     // Return true if more processing needed
+    const hasMore = connectionUpdateQueue.size > 0
+    if (!hasMore) {
+        onComplete()
+    }
+
+    return hasMore
+}
+
+/**
+ * LIVE drag connection updates - uses drag positions for immediate feedback during drag
+ */
+export function processLiveDragConnectionUpdates(
+    connectionUpdateQueue: Set<string>,
+    nodeConnectionsMap: Map<string, Connection[]>,
+    connectionLayer: LayerSelection,
+    getConnectionPath: (conn: Connection, useDragPositions?: boolean) => string,
+    draggedNodeId: string,
+    onComplete: () => void
+): boolean {
+    if (connectionUpdateQueue.size === 0) {
+        return false
+    }
+
+    if (!connectionLayer) {
+        return false
+    }
+
+    const nodesToProcess = Array.from(connectionUpdateQueue)
+    const startTime = performance.now()
+    const maxProcessingTime = 4 // Faster processing for live updates
+
+    for (const nodeId of nodesToProcess) {
+        if (performance.now() - startTime > maxProcessingTime) {
+            break
+        }
+
+        const affectedConnections = nodeConnectionsMap.get(nodeId) || []
+        if (affectedConnections.length === 0) {
+            connectionUpdateQueue.delete(nodeId)
+            continue
+        }
+
+        const connectionElements = affectedConnections
+            .map((conn) => ({
+                conn,
+                element: connectionLayer.select(`[data-connection-id="${conn.id}"]`),
+            }))
+            .filter(({ element }) => !element.empty())
+
+        // LIVE UPDATE: Use drag positions only for the currently dragged node
+        connectionElements.forEach(({ conn, element }) => {
+            const pathElement = element.select('.connection-path')
+            // Only use drag positions if this connection involves the currently dragged node
+            const shouldUseDragPositions = (conn.sourceNodeId === draggedNodeId || conn.targetNodeId === draggedNodeId)
+            const newPath = getConnectionPath(conn, shouldUseDragPositions)
+            const oldPath = pathElement.attr('d')
+            if (oldPath !== newPath) {
+                pathElement.attr('d', newPath)
+            }
+        })
+
+        connectionUpdateQueue.delete(nodeId)
+    }
+
     const hasMore = connectionUpdateQueue.size > 0
     if (!hasMore) {
         onComplete()
@@ -247,7 +312,7 @@ export function updateDraggedNodePosition(
     // Store current smoothed drag position
     const smoothed = { x: smoothedX, y: smoothedY }
     config.currentDragPositions.set(nodeId, smoothed)
-    // Sync with connection paths hook for live path updates during drag (use smoothed to prevent jitter)
+    // CRITICAL: Update drag position for live connection rendering during drag
     config.updateConnDragPos(nodeId, smoothed)
 
     // Spatial threshold gating: only recompute connection paths if movement from the last recompute exceeds threshold
@@ -267,12 +332,12 @@ export function updateDraggedNodePosition(
     }
     config.lastDragUpdate.current = now
 
-    // Queue connection updates for batched processing
+    // LIVE UPDATE: Use drag positions for immediate feedback during drag
     const affectedConnections = config.nodeConnectionsMap.get(nodeId) || []
     if (affectedConnections.length > 0) {
         config.connectionUpdateQueue.add(nodeId)
         lastConnUpdatePos.set(nodeId, smoothed)
-        config.startBatchedConnectionUpdates()
+        config.startLiveDragConnectionUpdates()
     }
 }
 
@@ -356,8 +421,10 @@ export function forceCompleteStateSyncAfterDrop(
         additionalCacheCleanup()
     }
 
-    // STEP 3: Force regeneration of ALL connection paths with committed positions
-    // This ensures no connection retains any stale state from the drag operation
+    // STEP 3: IMMEDIATE synchronous update of ALL connections to prevent race conditions
+    // Force immediate DOM updates to prevent any visual jumping
+    const start = performance.now()
+    
     allConnections.forEach((conn) => {
         const connectionElement = connectionLayer.select(`[data-connection-id="${conn.id}"]`)
         if (connectionElement.empty()) {
@@ -365,15 +432,18 @@ export function forceCompleteStateSyncAfterDrop(
         }
 
         const pathElement = connectionElement.select('.connection-path')
-        // CRITICAL: Use committed positions only (useDragPositions = false) for ALL connections
+        // CRITICAL: Force immediate generation with committed positions only
         const newPath = getConnectionPath(conn, false)
-        const currentPath = pathElement.attr('d')
-
-        // Only update if path actually changed to avoid unnecessary DOM manipulation
-        if (currentPath !== newPath) {
-            pathElement.attr('d', newPath)
-        }
+        
+        // FORCE immediate DOM update (no optimization checks)
+        pathElement.attr('d', newPath)
     })
+
+    // Log performance for debugging
+    const duration = performance.now() - start
+    if (process.env.NODE_ENV === 'development' && duration > 10) {
+        console.warn(`[forceCompleteStateSyncAfterDrop] Sync took ${duration.toFixed(2)}ms for ${allConnections.length} connections`)
+    }
 
     // STEP 4: Reset all adaptive performance configs to prevent stale optimization state
     if (window.__wfAdaptive) {

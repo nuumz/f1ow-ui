@@ -83,6 +83,7 @@ import {
 import {
   processBatchedVisualUpdates,
   processBatchedConnectionUpdates,
+  processLiveDragConnectionUpdates,
   updateDraggedNodePosition,
   resetNodeVisualStyle,
   clearAllVisualCaches,
@@ -869,7 +870,7 @@ function WorkflowCanvas({
     return map;
   }, [connections]);
 
-  // Batched connection update system for better performance
+  // Batched connection update system for better performance (after drag end)
   const processBatchedConnectionUpdatesCallback = useCallback(() => {
     const connectionLayer = getCachedSelection('connectionLayer');
     if (!connectionLayer) {
@@ -893,6 +894,31 @@ function WorkflowCanvas({
     }
   }, [nodeConnectionsMap, getConnectionPath, getCachedSelection]);
 
+  // Live drag connection updates for immediate feedback during drag
+  const processLiveDragConnectionUpdatesCallback = useCallback(() => {
+    const connectionLayer = getCachedSelection('connectionLayer');
+    if (!connectionLayer || !draggedNodeId) {
+      return;
+    }
+
+    const hasMore = processLiveDragConnectionUpdates(
+      connectionUpdateQueueRef.current,
+      nodeConnectionsMap,
+      connectionLayer,
+      getConnectionPath,
+      draggedNodeId,
+      () => {
+        batchedConnectionUpdateRef.current = null;
+      }
+    );
+
+    if (hasMore) {
+      batchedConnectionUpdateRef.current = requestAnimationFrame(
+        processLiveDragConnectionUpdatesCallback
+      );
+    }
+  }, [nodeConnectionsMap, getConnectionPath, getCachedSelection, draggedNodeId]);
+
   const updateDraggedNodePositionCallback = useCallback(
     (nodeId: string, newX: number, newY: number) => {
       const dragConfig: DragPositionConfig = {
@@ -910,6 +936,13 @@ function WorkflowCanvas({
             );
           }
         },
+        startLiveDragConnectionUpdates: () => {
+          if (!batchedConnectionUpdateRef.current) {
+            batchedConnectionUpdateRef.current = requestAnimationFrame(
+              processLiveDragConnectionUpdatesCallback
+            );
+          }
+        },
       };
 
       updateDraggedNodePosition(nodeId, newX, newY, dragConfig);
@@ -919,6 +952,7 @@ function WorkflowCanvas({
       dragUpdateThrottle,
       updateConnDragPos,
       processBatchedConnectionUpdatesCallback,
+      processLiveDragConnectionUpdatesCallback,
     ]
   );
 

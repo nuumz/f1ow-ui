@@ -46,7 +46,8 @@ describe('Drag Flickering Fix - Visual State Manager', () => {
             connectionUpdateQueue: mockConnectionUpdateQueue,
             lastDragUpdate: lastDragUpdateRef,
             dragUpdateThrottle: 0, // No throttling for tests
-            startBatchedConnectionUpdates: vi.fn()
+            startBatchedConnectionUpdates: vi.fn(),
+            startLiveDragConnectionUpdates: vi.fn()
         }
     })
 
