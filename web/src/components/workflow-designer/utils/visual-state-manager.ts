@@ -291,6 +291,102 @@ export function clearNodeDragTracking(nodeId: string): void {
 }
 
 /**
+ * CRITICAL: Immediate connection sync after node position commit
+ * Forces immediate connection path updates using committed positions to prevent flicker
+ */
+export function syncConnectionsWithCommittedPositions(
+    nodeId: string,
+    nodeConnectionsMap: Map<string, Connection[]>,
+    connectionLayer: LayerSelection,
+    getConnectionPath: (conn: Connection, useDragPositions?: boolean) => string,
+    clearConnCache: () => void
+): void {
+    if (!connectionLayer) {
+        return
+    }
+
+    // Clear cache first to force regeneration with committed positions
+    clearConnCache()
+
+    const affectedConnections = nodeConnectionsMap.get(nodeId) || []
+    if (affectedConnections.length === 0) {
+        return
+    }
+
+    // Immediately update all affected connections with committed positions (no drag override)
+    affectedConnections.forEach((conn) => {
+        const connectionElement = connectionLayer.select(`[data-connection-id="${conn.id}"]`)
+        if (connectionElement.empty()) {
+            return
+        }
+
+        const pathElement = connectionElement.select('.connection-path')
+        // Use committed positions only (useDragPositions = false)
+        const newPath = getConnectionPath(conn, false)
+        pathElement.attr('d', newPath)
+    })
+}
+
+/**
+ * ENHANCED: Complete state synchronization after any node drop
+ * Ensures all caches are cleared and all connections use current committed positions
+ * This is the most comprehensive sync function to prevent any stale state issues
+ */
+export function forceCompleteStateSyncAfterDrop(
+    _droppedNodeId: string, // For logging/debugging purposes
+    allConnections: Connection[],
+    connectionLayer: LayerSelection,
+    getConnectionPath: (conn: Connection, useDragPositions?: boolean) => string,
+    clearConnCache: () => void,
+    clearAllDragPositions: () => void,
+    additionalCacheCleanup?: () => void
+): void {
+    if (!connectionLayer) {
+        return
+    }
+
+    // STEP 1: Clear ALL caches and drag state completely
+    clearConnCache() // Connection path cache
+    clearAllDragPositions() // Drag position tracking
+    clearAllDragTracking() // Visual state manager tracking
+    lastConnUpdatePos.clear() // Local connection update tracking
+
+    // STEP 2: Additional cleanup if provided (e.g., z-index, RAF, etc.)
+    if (additionalCacheCleanup) {
+        additionalCacheCleanup()
+    }
+
+    // STEP 3: Force regeneration of ALL connection paths with committed positions
+    // This ensures no connection retains any stale state from the drag operation
+    allConnections.forEach((conn) => {
+        const connectionElement = connectionLayer.select(`[data-connection-id="${conn.id}"]`)
+        if (connectionElement.empty()) {
+            return
+        }
+
+        const pathElement = connectionElement.select('.connection-path')
+        // CRITICAL: Use committed positions only (useDragPositions = false) for ALL connections
+        const newPath = getConnectionPath(conn, false)
+        const currentPath = pathElement.attr('d')
+
+        // Only update if path actually changed to avoid unnecessary DOM manipulation
+        if (currentPath !== newPath) {
+            pathElement.attr('d', newPath)
+        }
+    })
+
+    // STEP 4: Reset all adaptive performance configs to prevent stale optimization state
+    if (window.__wfAdaptive) {
+        window.__wfAdaptive.lastDuration = 0
+        window.__wfAdaptive.vBudget = 4 // Reset to default
+    }
+    if (window.__wfConnAdaptive) {
+        window.__wfConnAdaptive.lastDuration = 0
+        window.__wfConnAdaptive.cBudget = 8 // Reset to default
+    }
+}
+
+/**
  * Clears all drag position tracking
  */
 export function clearAllDragTracking(): void {

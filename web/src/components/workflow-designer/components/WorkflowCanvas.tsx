@@ -87,6 +87,7 @@ import {
   resetNodeVisualStyle,
   clearAllVisualCaches,
   clearAllDragTracking,
+  forceCompleteStateSyncAfterDrop,
   type DragPositionConfig,
   type VisualCacheConfig,
 } from '../utils/visual-state-manager';
@@ -1208,6 +1209,7 @@ function WorkflowCanvas({
         try {
           const connectionLayer = getCachedSelection('connectionLayer');
           if (connectionLayer) {
+            // CRITICAL: First ensure all connections use committed positions, then apply drag for current node
             connections.forEach((conn) => {
               const group = connectionLayer.select(`[data-connection-id="${conn.id}"]`);
               if (!group.empty()) {
@@ -1344,26 +1346,30 @@ function WorkflowCanvas({
 
         // Force immediate refresh of all connection paths with real positions
         try {
-          // Clear the cache to ensure fresh paths
-          clearConnCache();
-
-          // CRITICAL FIX: Update connection paths synchronously to prevent flickering
-          // Using requestAnimationFrame can cause race conditions with subsequent drags
+          // ENHANCED: Complete state synchronization after node drop
+          // This ensures ALL caches are cleared and ALL connections use committed positions
           const connectionLayer = getCachedSelection('connectionLayer');
           if (connectionLayer && connections.length > 0) {
-            // Update all connection paths immediately with committed node positions
-            connections.forEach((conn) => {
-              const group = connectionLayer.select(`[data-connection-id="${conn.id}"]`);
-              if (!group.empty()) {
-                const pathEl = group.select('.connection-path');
-                // CRITICAL: Use false to ensure we get paths based on committed node positions only
-                const newPath = getConnectionPath(conn, false); // false = use real positions, no drag
-                const currentPath = pathEl.attr('d');
-                if (currentPath !== newPath) {
-                  pathEl.attr('d', newPath);
-                }
-              }
-            });
+            // Create additional cache cleanup function to clear all remaining state
+            const additionalCacheCleanup = () => {
+              // Clear z-index state
+              zIndexManager.clearState();
+              // Clear RAF scheduler
+              rafScheduler.clear();
+              // Clear node position cache
+              nodePositionCacheRef.current.clear();
+            };
+
+            // COMPREHENSIVE SYNC: Force complete state reset for ALL connections
+            forceCompleteStateSyncAfterDrop(
+              d.id,
+              connections, // ALL connections, not just affected ones
+              connectionLayer,
+              getConnectionPath,
+              clearConnCache,
+              clearAllDragPositions,
+              additionalCacheCleanup
+            );
           }
         } catch (e) {
           // Keep failures silent but visible in dev

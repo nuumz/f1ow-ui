@@ -1,7 +1,23 @@
 /// <reference types="vitest" />
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { updateDraggedNodePosition, clearAllDragTracking } from '../visual-state-manager'
+import {
+    updateDraggedNodePosition,
+    clearAllDragTracking,
+    syncConnectionsWithCommittedPositions,
+    forceCompleteStateSyncAfterDrop
+} from '../visual-state-manager'
 import type { DragPositionConfig } from '../visual-state-manager'
+
+// Mock D3 selection
+const mockSelection = {
+    select: vi.fn(),
+    attr: vi.fn(),
+    empty: vi.fn()
+}
+
+const mockConnectionLayer = {
+    select: vi.fn(() => mockSelection)
+}
 
 describe('Drag Flickering Fix - Visual State Manager', () => {
     let mockDragConfig: DragPositionConfig
@@ -129,5 +145,102 @@ describe('Drag Flickering Fix - Visual State Manager', () => {
         expect(finalPosition.y).toBeCloseTo(12.5, 0.1)
         expect(finalPosition.x).toBeGreaterThan(10) // Should be progressing towards target
         expect(finalPosition.y).toBeGreaterThan(10)
+    })
+
+    it('should sync connections with committed positions immediately', () => {
+        // Mock connection path function
+        const mockGetConnectionPath = vi.fn((conn, useDragPositions = false) =>
+            `M${useDragPositions ? 'drag' : 'committed'}-${conn.id}`
+        )
+        const mockClearConnCache = vi.fn()
+
+        // Mock connection layer
+        mockSelection.select.mockReturnValue(mockSelection)
+        mockSelection.attr.mockReturnValue(mockSelection)
+        mockSelection.empty.mockReturnValue(false)
+        mockConnectionLayer.select.mockReturnValue(mockSelection)
+
+        const connections = [
+            { id: 'conn1', sourceNodeId: 'nodeA', sourcePortId: 'out', targetNodeId: 'nodeB', targetPortId: 'in' },
+            { id: 'conn2', sourceNodeId: 'nodeA', sourcePortId: 'out', targetNodeId: 'nodeC', targetPortId: 'in' }
+        ]
+
+        // Set up node connections map
+        const nodeConnectionsMap = new Map([
+            ['nodeA', connections]
+        ])
+
+        // Call sync function
+        syncConnectionsWithCommittedPositions(
+            'nodeA',
+            nodeConnectionsMap,
+            mockConnectionLayer as unknown as d3.Selection<SVGGElement, unknown, null, undefined>,
+            mockGetConnectionPath,
+            mockClearConnCache
+        )
+
+        // Should clear cache first
+        expect(mockClearConnCache).toHaveBeenCalled()
+
+        // Should use committed positions (useDragPositions = false)
+        expect(mockGetConnectionPath).toHaveBeenCalledWith(connections[0], false)
+        expect(mockGetConnectionPath).toHaveBeenCalledWith(connections[1], false)
+
+        // Should update DOM with committed paths
+        expect(mockSelection.attr).toHaveBeenCalledWith('d', 'Mcommitted-conn1')
+        expect(mockSelection.attr).toHaveBeenCalledWith('d', 'Mcommitted-conn2')
+    })
+
+    it('should force complete state sync after node drop', () => {
+        // Mock connection path function
+        const mockGetConnectionPath = vi.fn((conn, useDragPositions = false) =>
+            `M${useDragPositions ? 'drag' : 'committed'}-${conn.id}`
+        )
+        const mockClearConnCache = vi.fn()
+        const mockClearAllDragPositions = vi.fn()
+        const mockAdditionalCleanup = vi.fn()
+
+        // Mock connection layer
+        mockSelection.select.mockReturnValue(mockSelection)
+        mockSelection.attr.mockReturnValue(mockSelection)
+        mockSelection.empty.mockReturnValue(false)
+        mockConnectionLayer.select.mockReturnValue(mockSelection)
+
+        const allConnections = [
+            { id: 'conn1', sourceNodeId: 'nodeA', sourcePortId: 'out', targetNodeId: 'nodeB', targetPortId: 'in' },
+            { id: 'conn2', sourceNodeId: 'nodeB', sourcePortId: 'out', targetNodeId: 'nodeC', targetPortId: 'in' },
+            { id: 'conn3', sourceNodeId: 'nodeC', sourcePortId: 'out', targetNodeId: 'nodeA', targetPortId: 'in' }
+        ]
+
+        // Call complete sync function
+        forceCompleteStateSyncAfterDrop(
+            'nodeA',
+            allConnections,
+            mockConnectionLayer as unknown as d3.Selection<SVGGElement, unknown, null, undefined>,
+            mockGetConnectionPath,
+            mockClearConnCache,
+            mockClearAllDragPositions,
+            mockAdditionalCleanup
+        )
+
+        // Should clear all caches and state
+        expect(mockClearConnCache).toHaveBeenCalled()
+        expect(mockClearAllDragPositions).toHaveBeenCalled()
+        expect(mockAdditionalCleanup).toHaveBeenCalled()
+
+        // Should regenerate ALL connection paths with committed positions
+        expect(mockGetConnectionPath).toHaveBeenCalledWith(allConnections[0], false)
+        expect(mockGetConnectionPath).toHaveBeenCalledWith(allConnections[1], false)
+        expect(mockGetConnectionPath).toHaveBeenCalledWith(allConnections[2], false)
+
+        // Should update all DOM elements
+        expect(mockConnectionLayer.select).toHaveBeenCalledWith('[data-connection-id="conn1"]')
+        expect(mockConnectionLayer.select).toHaveBeenCalledWith('[data-connection-id="conn2"]')
+        expect(mockConnectionLayer.select).toHaveBeenCalledWith('[data-connection-id="conn3"]')
+
+        // Should update all paths with committed positions
+        expect(mockSelection.attr).toHaveBeenCalledWith('d', 'Mcommitted-conn1')
+        expect(mockSelection.attr).toHaveBeenCalledWith('d', 'Mcommitted-conn2')
+        expect(mockSelection.attr).toHaveBeenCalledWith('d', 'Mcommitted-conn3')
     })
 })

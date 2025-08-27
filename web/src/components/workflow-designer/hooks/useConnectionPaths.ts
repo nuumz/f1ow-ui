@@ -49,6 +49,8 @@ export function useConnectionPaths(
 
   const clearAllDragPositions = useCallback(() => {
     dragPositionsRef.current.clear();
+    // Also clear cache to force immediate regeneration with committed positions
+    pathCacheRef.current.clear();
   }, []);
 
   const cleanupCacheIfNeeded = useCallback(() => {
