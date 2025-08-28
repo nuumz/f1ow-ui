@@ -4,16 +4,16 @@
  */
 
 import type { WorkflowNode, NodeDefinition, Position, SelectionArea, NodeShape } from '../types'
-import { 
-  NodeTypes, 
+import {
   getNodeColor as getCentralizedNodeColor,
-  getNodeIcon as getCentralizedNodeIcon, 
+  getNodeIcon as getCentralizedNodeIcon,
   getPortColor as getCentralizedPortColor,
-  getNodeDefinition as getCentralizedNodeDefinition
+  getNodeDefinition as getCentralizedNodeDefinition,
+  getNodeTypeInfo
 } from '../types/nodes'
-import { 
-  getShapeDimensions, 
-  getShapePath, 
+import {
+  getShapeDimensions,
+  getShapePath,
   getNodeShape as getShapeFromType,
   getPortPositions as getShapePortPositions,
   isPointInShape
@@ -33,7 +33,8 @@ export const getPortColor = getCentralizedPortColor
  * Get node shape based on type
  */
 export function getNodeShape(nodeType: string): NodeShape {
-  const nodeInfo = NodeTypes[nodeType]
+  // Use unified registry that includes ArchitectureNodeTypes fallback
+  const nodeInfo = getNodeTypeInfo(nodeType)
   return getShapeFromType(nodeType, nodeInfo)
 }
 
@@ -44,7 +45,7 @@ export function getShapeAwareDimensions(node: WorkflowNode) {
   const shape = getNodeShape(node.type)
   const baseWidth = getNodeWidth(node)
   const baseHeight = getNodeHeight(node)
-  
+
   return getShapeDimensions(shape, baseWidth, baseHeight)
 }
 
@@ -54,7 +55,7 @@ export function getShapeAwareDimensions(node: WorkflowNode) {
 export function getNodeShapePath(node: WorkflowNode, borderRadius: number | { topLeft?: number; topRight?: number; bottomLeft?: number; bottomRight?: number } = 8) {
   const shape = getNodeShape(node.type)
   const dimensions = getShapeAwareDimensions(node)
-  
+
   return getShapePath(shape, dimensions.width, dimensions.height, borderRadius)
 }
 
@@ -65,7 +66,7 @@ export function getPortPositions(node: WorkflowNode, portType: 'input' | 'output
   const shape = getNodeShape(node.type)
   const dimensions = getShapeAwareDimensions(node)
   const portCount = portType === 'input' ? node.inputs.length : node.outputs.length
-  
+
   return getShapePortPositions(shape, dimensions, portCount, portType)
 }
 
@@ -93,19 +94,19 @@ export function getNodeHeight(node: WorkflowNode): number {
 export function getNodeWidth(node: WorkflowNode): number {
   // Base width
   let width = NODE_WIDTH
-  
+
   // Adjust for label length
   const labelLength = node.label.length
   if (labelLength > 15) {
     width = Math.max(width, labelLength * 8)
   }
-  
+
   // Adjust for port count
   const maxPorts = Math.max(node.inputs.length, node.outputs.length)
   if (maxPorts > 3) {
     width = Math.max(width, NODE_WIDTH + 20)
   }
-  
+
   return Math.min(width, 300) // Cap at 300px
 }
 
@@ -114,11 +115,13 @@ export function getNodeWidth(node: WorkflowNode): number {
  */
 export function createNode(type: string, position: Position): WorkflowNode {
   const definition = getNodeDefinition(type)
-  const nodeInfo = NodeTypes[type]
-  
+  // Pull info from unified registry (workflow + architecture)
+  const nodeInfo = getNodeTypeInfo(type)
+
   return {
     id: `node-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`,
     type,
+    // Prefer the registry label (covers architecture-only types like 'database')
     label: nodeInfo?.label || 'New Node',
     x: position.x,
     y: position.y,
@@ -143,27 +146,27 @@ export function canConnect(
   if (sourceNode.id === targetNode.id) {
     return false
   }
-  
+
   // Find ports
   const sourcePort = sourceNode.outputs.find(p => p.id === sourcePortId)
   let targetPort = targetNode.inputs.find(p => p.id === targetPortId)
-  
+
   // If not found in regular inputs, check bottom ports
   if (!targetPort && targetNode.bottomPorts) {
     targetPort = targetNode.bottomPorts.find(p => p.id === targetPortId)
   }
-  
+
   if (!sourcePort || !targetPort) {
     return false
   }
-  
+
   // Check data type compatibility
   if (sourcePort.dataType !== 'any' && targetPort.dataType !== 'any') {
     if (sourcePort.dataType !== targetPort.dataType) {
       return false
     }
   }
-  
+
   return true
 }
 
@@ -179,7 +182,7 @@ export function getNodesInArea(
     const nodeBottom = node.y + (node.height || getNodeHeight(node))
     const areaRight = area.x + area.width
     const areaBottom = area.y + area.height
-    
+
     return (
       node.x < areaRight &&
       nodeRight > area.x &&
@@ -208,22 +211,22 @@ export function findClosestNode(
 ): WorkflowNode | null {
   let closest: WorkflowNode | null = null
   let minDistance = Infinity
-  
+
   for (const node of nodes) {
     if (excludeNodeId && node.id === excludeNodeId) {
       continue
     }
-    
+
     const distance = Math.sqrt(
       Math.pow(node.x - position.x, 2) + Math.pow(node.y - position.y, 2)
     )
-    
+
     if (distance < minDistance) {
       minDistance = distance
       closest = node
     }
   }
-  
+
   return closest
 }
 
@@ -234,7 +237,7 @@ export function isPositionInNode(position: Position, node: WorkflowNode): boolea
   const dimensions = getShapeAwareDimensions(node)
   const shape = getNodeShape(node.type)
   const nodeCenter = { x: node.x, y: node.y }
-  
+
   // Use shape-aware hit testing
   return isPointInShape(shape, position, dimensions, nodeCenter)
 }
@@ -245,7 +248,7 @@ export function isPositionInNode(position: Position, node: WorkflowNode): boolea
 export function getNodeBounds(node: WorkflowNode) {
   const width = node.width || getNodeWidth(node)
   const height = node.height || getNodeHeight(node)
-  
+
   return {
     x: node.x,
     y: node.y,
@@ -268,10 +271,10 @@ export function findOptimalNodePosition(
   const baseX = preferredPosition?.x || 100
   const baseY = preferredPosition?.y || 100
   const spacing = 50
-  
+
   // Try the preferred position first
   let testPosition = { x: baseX, y: baseY }
-  
+
   for (let attempt = 0; attempt < 20; attempt++) {
     const hasOverlap = existingNodes.some(node => {
       const distance = Math.sqrt(
@@ -279,11 +282,11 @@ export function findOptimalNodePosition(
       )
       return distance < NODE_WIDTH + spacing
     })
-    
+
     if (!hasOverlap) {
       return testPosition
     }
-    
+
     // Try next position in a spiral pattern
     const angle = (attempt * 137.5) * (Math.PI / 180) // Golden angle
     const radius = Math.sqrt(attempt + 1) * spacing
@@ -292,7 +295,7 @@ export function findOptimalNodePosition(
       y: baseY + Math.sin(angle) * radius
     }
   }
-  
+
   return testPosition
 }
 
@@ -307,12 +310,12 @@ export function getNodesByType(nodes: WorkflowNode[], type: string): WorkflowNod
  * Get all connected nodes for a given node
  */
 export function getConnectedNodes(
-  node: WorkflowNode, 
-  allNodes: WorkflowNode[], 
+  node: WorkflowNode,
+  allNodes: WorkflowNode[],
   connections: Array<{ sourceNodeId: string; targetNodeId: string }>
 ): WorkflowNode[] {
   const connectedNodeIds = new Set<string>()
-  
+
   connections.forEach(conn => {
     if (conn.sourceNodeId === node.id) {
       connectedNodeIds.add(conn.targetNodeId)
@@ -321,7 +324,7 @@ export function getConnectedNodes(
       connectedNodeIds.add(conn.sourceNodeId)
     }
   })
-  
+
   return allNodes.filter(n => connectedNodeIds.has(n.id))
 }
 
@@ -332,12 +335,12 @@ export function getWorkflowBounds(nodes: WorkflowNode[]) {
   if (nodes.length === 0) {
     return { x: 0, y: 0, width: 0, height: 0 }
   }
-  
+
   let minX = Infinity
   let minY = Infinity
   let maxX = -Infinity
   let maxY = -Infinity
-  
+
   nodes.forEach(node => {
     const bounds = getNodeBounds(node)
     minX = Math.min(minX, bounds.x)
@@ -345,7 +348,7 @@ export function getWorkflowBounds(nodes: WorkflowNode[]) {
     maxX = Math.max(maxX, bounds.right)
     maxY = Math.max(maxY, bounds.bottom)
   })
-  
+
   return {
     x: minX,
     y: minY,

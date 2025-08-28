@@ -6,9 +6,9 @@
 import type { WorkflowNode, NodeDefinition, NodeTypeInfo } from './index'
 
 // Architecture diagram specific node categories
-export type ArchitectureNodeCategory = 
+export type ArchitectureNodeCategory =
   | 'System/External Service'
-  | 'System/Internal Service' 
+  | 'System/Internal Service'
   | 'System/Database'
   | 'System/Queue'
   | 'System/Cache'
@@ -190,6 +190,149 @@ export interface ArchitectureDiagramLayout {
 
 // Architecture node type definitions
 export const ArchitectureNodeTypes: Record<string, NodeTypeInfo> = {
+  // Aliases and additional types used by ArchitectureNodePalette
+  // Infrastructure
+  'server': {
+    icon: '🖥️',
+    color: '#3b82f6',
+    label: 'Application Server',
+    category: 'Infrastructure/Container',
+    description: 'Application hosting server',
+    shape: 'rectangle'
+  },
+  'loadbalancer': {
+    icon: '⚖️',
+    color: '#10b981',
+    label: 'Load Balancer',
+    category: 'System/Load Balancer',
+    description: 'Traffic distribution and balancing'
+  },
+  'storage': {
+    icon: '🗄️',
+    color: '#0ea5e9',
+    label: 'Object Storage',
+    category: 'Infrastructure/Cloud Service',
+    description: 'File and object storage service'
+  },
+
+  // Services & APIs
+  'api': {
+    icon: '🔗',
+    color: '#84cc16',
+    label: 'API',
+    category: 'API/REST Endpoint',
+    description: 'Generic API endpoint'
+  },
+  'queue': {
+    icon: '📬',
+    color: '#f97316',
+    label: 'Message Queue',
+    category: 'System/Queue',
+    description: 'Asynchronous message processing'
+  },
+
+  // Cloud & Orchestration
+  'cloudfunction': {
+    icon: '☁️',
+    color: '#6366f1',
+    label: 'Cloud Function',
+    category: 'Infrastructure/Cloud Service',
+    description: 'Serverless function execution'
+  },
+  'kubernetes': {
+    icon: '☸️',
+    color: '#7c3aed',
+    label: 'Kubernetes Cluster',
+    category: 'Infrastructure/Container',
+    description: 'Container orchestration platform'
+  },
+
+  // Security
+  'firewall': {
+    icon: '🛡️',
+    color: '#dc2626',
+    label: 'Firewall',
+    category: 'Infrastructure/Network',
+    description: 'Network security and filtering'
+  },
+  'auth': {
+    icon: '🔐',
+    color: '#991b1b',
+    label: 'Auth Service',
+    category: 'Security/Authentication',
+    description: 'Authentication and authorization'
+  },
+
+  // External Systems
+  'external': {
+    icon: '🌐',
+    color: '#4b5563',
+    label: 'External System',
+    category: 'System/External Service',
+    description: 'Third-party or external service'
+  },
+  'thirdparty': {
+    icon: '📦',
+    color: '#6b7280',
+    label: 'Third-party API',
+    category: 'System/External Service',
+    description: 'External API integration'
+  },
+
+  // Client Applications
+  'webapp': {
+    icon: '🖥️',
+    color: '#059669',
+    label: 'Web Application',
+    category: 'Infrastructure/Network',
+    description: 'Browser-based application'
+  },
+  'mobile': {
+    icon: '📱',
+    color: '#0891b2',
+    label: 'Mobile App',
+    category: 'Infrastructure/Network',
+    description: 'Mobile application client'
+  },
+  'tablet': {
+    icon: '📱',
+    color: '#0284c7',
+    label: 'Tablet App',
+    category: 'Infrastructure/Network',
+    description: 'Tablet application interface'
+  },
+
+  // Data Flow
+  'processor': {
+    icon: '🧮',
+    color: '#be185d',
+    label: 'Data Processor',
+    category: 'Business/Process',
+    description: 'Data processing and transformation'
+  },
+  'pipeline': {
+    icon: '🔀',
+    color: '#c2410c',
+    label: 'Data Pipeline',
+    category: 'Business/Process',
+    description: 'Data processing pipeline'
+  },
+
+  // Documentation & Teams
+  'documentation': {
+    icon: '📄',
+    color: '#374151',
+    label: 'Documentation',
+    category: 'Monitoring/Logging',
+    description: 'System documentation and guides'
+  },
+  'team': {
+    icon: '👥',
+    color: '#1f2937',
+    label: 'Development Team',
+    category: 'Business/Process',
+    description: 'Team or stakeholder group'
+  },
   // External Services
   'ext-service': {
     icon: '🌐',
@@ -199,7 +342,7 @@ export const ArchitectureNodeTypes: Record<string, NodeTypeInfo> = {
     description: 'Third-party external service',
     shape: 'rectangle'
   },
-  
+
   'ext-api': {
     icon: '🔗',
     color: '#4ECDC4',
@@ -207,7 +350,7 @@ export const ArchitectureNodeTypes: Record<string, NodeTypeInfo> = {
     category: 'API/REST Endpoint',
     description: 'External API endpoint'
   },
-  
+
   // Internal Services
   'microservice': {
     icon: '⚙️',
@@ -217,7 +360,7 @@ export const ArchitectureNodeTypes: Record<string, NodeTypeInfo> = {
     description: 'Internal microservice',
     shape: 'rectangle'
   },
-  
+
   'api-gateway': {
     icon: '🚪',
     color: '#96CEB4',
@@ -225,7 +368,7 @@ export const ArchitectureNodeTypes: Record<string, NodeTypeInfo> = {
     category: 'System/Gateway',
     description: 'API gateway service'
   },
-  
+
   'load-balancer': {
     icon: '⚖️',
     color: '#FFEAA7',
@@ -233,7 +376,7 @@ export const ArchitectureNodeTypes: Record<string, NodeTypeInfo> = {
     category: 'System/Load Balancer',
     description: 'Load balancing service'
   },
-  
+
   // Data Stores
   'database': {
     icon: '🗄️',
@@ -243,7 +386,7 @@ export const ArchitectureNodeTypes: Record<string, NodeTypeInfo> = {
     description: 'Database system',
     shape: 'circle'
   },
-  
+
   'cache': {
     icon: '⚡',
     color: '#FD79A8',
@@ -252,7 +395,7 @@ export const ArchitectureNodeTypes: Record<string, NodeTypeInfo> = {
     description: 'Caching layer',
     shape: 'diamond'
   },
-  
+
   'message-queue': {
     icon: '📬',
     color: '#FDCB6E',
@@ -260,7 +403,7 @@ export const ArchitectureNodeTypes: Record<string, NodeTypeInfo> = {
     category: 'System/Queue',
     description: 'Message queue system'
   },
-  
+
   // API Types
   'rest-api': {
     icon: '🔄',
@@ -269,7 +412,7 @@ export const ArchitectureNodeTypes: Record<string, NodeTypeInfo> = {
     category: 'API/REST Endpoint',
     description: 'REST API endpoint'
   },
-  
+
   'graphql-api': {
     icon: '📊',
     color: '#E17055',
@@ -277,7 +420,7 @@ export const ArchitectureNodeTypes: Record<string, NodeTypeInfo> = {
     category: 'API/GraphQL Endpoint',
     description: 'GraphQL API endpoint'
   },
-  
+
   'websocket': {
     icon: '🔌',
     color: '#A29BFE',
@@ -285,7 +428,7 @@ export const ArchitectureNodeTypes: Record<string, NodeTypeInfo> = {
     category: 'API/WebSocket',
     description: 'WebSocket connection'
   },
-  
+
   'event-stream': {
     icon: '🌊',
     color: '#FD79A8',
@@ -293,7 +436,7 @@ export const ArchitectureNodeTypes: Record<string, NodeTypeInfo> = {
     category: 'API/Event Stream',
     description: 'Event streaming endpoint'
   },
-  
+
   // Business Layer
   'domain-service': {
     icon: '💼',
@@ -302,7 +445,7 @@ export const ArchitectureNodeTypes: Record<string, NodeTypeInfo> = {
     category: 'Business/Domain Service',
     description: 'Business domain service'
   },
-  
+
   'use-case': {
     icon: '🎯',
     color: '#00B894',
@@ -310,7 +453,7 @@ export const ArchitectureNodeTypes: Record<string, NodeTypeInfo> = {
     category: 'Business/Use Case',
     description: 'Business use case'
   },
-  
+
   'business-process': {
     icon: '📋',
     color: '#FDCB6E',
@@ -318,7 +461,7 @@ export const ArchitectureNodeTypes: Record<string, NodeTypeInfo> = {
     category: 'Business/Process',
     description: 'Business process flow'
   },
-  
+
   // Infrastructure
   'container': {
     icon: '📦',
@@ -327,7 +470,7 @@ export const ArchitectureNodeTypes: Record<string, NodeTypeInfo> = {
     category: 'Infrastructure/Container',
     description: 'Container/Pod'
   },
-  
+
   'cloud-service': {
     icon: '☁️',
     color: '#0984E3',
@@ -335,7 +478,7 @@ export const ArchitectureNodeTypes: Record<string, NodeTypeInfo> = {
     category: 'Infrastructure/Cloud Service',
     description: 'Cloud platform service'
   },
-  
+
   'cdn': {
     icon: '🌍',
     color: '#00CEC9',
@@ -343,7 +486,7 @@ export const ArchitectureNodeTypes: Record<string, NodeTypeInfo> = {
     category: 'System/CDN',
     description: 'Content delivery network'
   },
-  
+
   // Security
   'auth-service': {
     icon: '🔐',
@@ -352,7 +495,7 @@ export const ArchitectureNodeTypes: Record<string, NodeTypeInfo> = {
     category: 'Security/Authentication',
     description: 'Authentication service'
   },
-  
+
   'authorization': {
     icon: '🛡️',
     color: '#00B894',
@@ -360,7 +503,7 @@ export const ArchitectureNodeTypes: Record<string, NodeTypeInfo> = {
     category: 'Security/Authorization',
     description: 'Authorization service'
   },
-  
+
   // Monitoring
   'logger': {
     icon: '📝',
@@ -369,7 +512,7 @@ export const ArchitectureNodeTypes: Record<string, NodeTypeInfo> = {
     category: 'Monitoring/Logging',
     description: 'Logging service'
   },
-  
+
   'metrics': {
     icon: '📊',
     color: '#A29BFE',
@@ -403,7 +546,7 @@ export const ArchitectureNodeDefinitions: Record<string, NodeDefinition> = {
     icon: '⚙️',
     color: '#45B7D1'
   },
-  
+
   'rest-api': {
     inputs: [
       { id: 'request', type: 'input', dataType: 'object', label: 'Request', required: true }
@@ -424,7 +567,7 @@ export const ArchitectureNodeDefinitions: Record<string, NodeDefinition> = {
     icon: '🔄',
     color: '#00B894'
   },
-  
+
   'database': {
     inputs: [
       { id: 'query', type: 'input', dataType: 'string', label: 'Query', required: true }
@@ -443,7 +586,7 @@ export const ArchitectureNodeDefinitions: Record<string, NodeDefinition> = {
     icon: '🗄️',
     color: '#6C5CE7'
   },
-  
+
   'ext-service': {
     inputs: [
       { id: 'request', type: 'input', dataType: 'object', label: 'Request', required: true }
@@ -478,7 +621,7 @@ export const ArchitectureLayouts: Record<string, ArchitectureDiagramLayout> = {
       },
       {
         id: 'business',
-        name: 'Business Layer', 
+        name: 'Business Layer',
         y: 200,
         color: '#FFF2E8',
         nodeTypes: ['System/Internal Service', 'Business/Domain Service', 'Business/Use Case']
@@ -499,7 +642,7 @@ export const ArchitectureLayouts: Record<string, ArchitectureDiagramLayout> = {
       }
     ]
   },
-  
+
   'api-first': {
     type: 'cluster',
     clusters: [

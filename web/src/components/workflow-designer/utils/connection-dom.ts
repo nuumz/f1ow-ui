@@ -209,10 +209,13 @@ export function renderConnectionsLayer(opts: RenderConnectionsOptions) {
         }
         const gi = getGI(d.id)
         const isPrimary = gi.index === 0
-        label.style('display', isPrimary ? 'block' : 'none')
-        if (!isPrimary) {
+        const showLabel = isPrimary && gi.total > 1
+        if (!showLabel) {
+            // Hide label for single connection or non-primary in a group
+            label.style('display', 'none').text('')
             return
         }
+        label.style('display', 'block')
         let x = 0
         let y = 0
         // Try path midpoint
