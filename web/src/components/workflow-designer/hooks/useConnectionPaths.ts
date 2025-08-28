@@ -36,7 +36,8 @@ export interface UseConnectionPathsApi {
 export function useConnectionPaths(
   nodes: WorkflowNode[],
   nodeVariant: NodeVariant,
-  modeId: 'workflow' | 'architecture' | undefined
+  modeId: 'workflow' | 'architecture' | undefined,
+  isAnyDragging: boolean = false
 ): UseConnectionPathsApi {
   const pathCacheRef = useRef<Map<string, string>>(new Map());
   const dragPositionsRef = useRef<Map<string, DragPos>>(new Map());
@@ -129,6 +130,8 @@ export function useConnectionPaths(
     dragPositionsRef.current.clear();
     // Also clear cache to force immediate regeneration with committed positions
     pathCacheRef.current.clear();
+    // Reset sticky sides so routing can re-evaluate after drag
+    stickySideRef.current.clear();
   }, []);
 
   const cleanupCacheIfNeeded = useCallback(() => {
@@ -172,7 +175,12 @@ export function useConnectionPaths(
   }, []);
 
   // Helper: build cache key (avoid nested template literals)
-  const buildCacheKey = useCallback((connection: Connection, variant: NodeVariant, mode: string | undefined) => {
+  const buildCacheKey = useCallback((
+    connection: Connection,
+    variant: NodeVariant,
+    mode: string | undefined,
+    posSig?: string
+  ) => {
     const parts = [
       connection.id,
       connection.sourceNodeId,
@@ -185,6 +193,9 @@ export function useConnectionPaths(
     if (mode === 'architecture') {
       const side = stickySideRef.current.get(connection.id)?.side || 'none'
       parts.push(`side:${side}`)
+    }
+    if (posSig) {
+      parts.push(`pos:${posSig}`)
     }
     return parts.join('|')
   }, [])
@@ -237,17 +248,8 @@ export function useConnectionPaths(
     (connection: Connection, useDragPositions = false): string => {
       // CRITICAL FIX: Take atomic snapshot of current state to prevent race conditions
       const dragSnapshot = new Map(dragPositionsRef.current);
-      const effectiveUseDrag = useDragPositions;
-
-      // Cache key; include sticky side when in architecture mode to avoid cross-side reuse
-      const cacheKey = buildCacheKey(connection, nodeVariant, modeId);
-
-      if (!effectiveUseDrag) {
-        const cached = pathCacheRef.current.get(cacheKey);
-        if (cached) {
-          return cached;
-        }
-      }
+      const anyDragActive = isAnyDragging || dragSnapshot.size > 0;
+      const effectiveUseDrag = useDragPositions || anyDragActive;
 
       const sourceNode = nodeMap.get(connection.sourceNodeId);
       const targetNode = nodeMap.get(connection.targetNodeId);
@@ -278,14 +280,32 @@ export function useConnectionPaths(
         }
       }
 
-      // Architecture mode: apply sticky-side with hysteresis to avoid one-time jump
+      // Architecture mode: decide sticky-side BEFORE building cache key to avoid stale reuse
       let path: string;
+      let cacheKey: string | null = null;
+      let posSig: string = 'na';
       if ((modeId || 'workflow') === 'architecture') {
         const s = nodesForPath.find(n => n.id === connection.sourceNodeId);
         const t = nodesForPath.find(n => n.id === connection.targetNodeId);
         if (!s || !t) { return '' }
         const useSide = decideStickySide(connection.id, s, t)
         stickySideRef.current.set(connection.id, { side: useSide, ts: performance.now() });
+
+        // Build posSig from committed positions (not drag) to invalidate when nodes move
+        const srcForKey = nodes.find(n => n.id === connection.sourceNodeId);
+        const tgtForKey = nodes.find(n => n.id === connection.targetNodeId);
+        const fmt = (v: number) => v.toFixed(2);
+        posSig = srcForKey && tgtForKey
+          ? `${fmt(srcForKey.x)},${fmt(srcForKey.y)}->${fmt(tgtForKey.x)},${fmt(tgtForKey.y)}`
+          : 'na';
+        cacheKey = buildCacheKey(connection, nodeVariant, modeId, posSig);
+
+        if (!effectiveUseDrag && !anyDragActive) {
+          const cached = pathCacheRef.current.get(cacheKey);
+          if (cached) {
+            return cached;
+          }
+        }
 
         path = generateArchitectureModeConnectionPathWithTargetSide(
           s,
@@ -299,6 +319,21 @@ export function useConnectionPaths(
           useSide
         );
       } else {
+        // Precompute committed positions for cache key (avoid reuse after node moves without array identity change)
+        const srcForKey = nodes.find(n => n.id === connection.sourceNodeId);
+        const tgtForKey = nodes.find(n => n.id === connection.targetNodeId);
+        const fmt = (v: number) => v.toFixed(2);
+        posSig = srcForKey && tgtForKey
+          ? `${fmt(srcForKey.x)},${fmt(srcForKey.y)}->${fmt(tgtForKey.x)},${fmt(tgtForKey.y)}`
+          : 'na';
+        cacheKey = buildCacheKey(connection, nodeVariant, modeId, posSig);
+
+        if (!effectiveUseDrag && !anyDragActive) {
+          const cached = pathCacheRef.current.get(cacheKey);
+          if (cached) {
+            return cached;
+          }
+        }
         // Generate path with position-consistent node data
         path = generateModeAwareConnectionPath(
           {
@@ -347,13 +382,13 @@ export function useConnectionPaths(
       }
 
       // Cache result only if using committed positions
-      if (!useDragPositions) {
+      if (!useDragPositions && cacheKey && !anyDragActive) {
         pathCacheRef.current.set(cacheKey, finalPath);
         cleanupCacheIfNeeded();
       }
       return finalPath;
     },
-    [nodeMap, nodeVariant, modeId, nodes, cleanupCacheIfNeeded, buildCacheKey, decideStickySide, updateEndpointPositions]
+    [nodeMap, nodeVariant, modeId, nodes, cleanupCacheIfNeeded, buildCacheKey, decideStickySide, updateEndpointPositions, isAnyDragging]
   );
 
   return {

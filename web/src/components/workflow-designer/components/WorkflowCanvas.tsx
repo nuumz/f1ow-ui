@@ -531,20 +531,7 @@ function WorkflowCanvas({
   // Track current transform with ref for immediate access
   const currentTransformRef = useRef(canvasTransform);
 
-  // Centralized connection path generator + drag overrides
-  const {
-    getConnectionPath: getConnectionPathFromHook,
-    updateDragPosition: updateConnDragPos,
-    clearAllDragPositions,
-    clearCache: clearConnCache,
-  } = useConnectionPaths(nodes, nodeVariant, workflowContextState.designerMode as DesignerMode);
-
-  // Stable alias for downstream usage
-  const getConnectionPath = useCallback(
-    (connection: Connection, useDragPositions = false) =>
-      getConnectionPathFromHook(connection, useDragPositions),
-    [getConnectionPathFromHook]
-  );
+  // Centralized connection path generator + drag overrides (moved below isDragging)
 
   // Helper functions to reduce cognitive complexity
   const getArrowMarkerForMode = useCallback(
@@ -591,6 +578,26 @@ function WorkflowCanvas({
 
   // Use context-based dragging state
   const isDragging = isContextDragging();
+
+  // Initialize connection path hook after isDragging is available
+  const {
+    getConnectionPath: getConnectionPathFromHook,
+    updateDragPosition: updateConnDragPos,
+    clearAllDragPositions,
+    clearCache: clearConnCache,
+  } = useConnectionPaths(
+    nodes,
+    nodeVariant,
+    workflowContextState.designerMode as DesignerMode,
+    isDragging // bypass cache immediately on drag start
+  );
+
+  // Stable alias for downstream usage
+  const getConnectionPath = useCallback(
+    (connection: Connection, useDragPositions = false) =>
+      getConnectionPathFromHook(connection, useDragPositions),
+    [getConnectionPathFromHook]
+  );
   const draggedNodeId = getDraggedNodeId();
 
   // Cache refs for performance with size limits to prevent memory leaks
