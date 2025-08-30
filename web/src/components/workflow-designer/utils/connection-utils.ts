@@ -513,6 +513,8 @@ export function calculateConnectionPreviewPath(
     config?: PathConfig
     modeId?: string
     hoverTargetBox?: { x: number; y: number; width: number; height: number }
+    // When hovering an actual node, use it to generate the exact same path as final
+    hoveredNode?: WorkflowNode
     availableNodes?: WorkflowNode[]
   }
 ): string { // NOSONAR: readability prioritized over cognitive complexity metric here
@@ -554,6 +556,22 @@ export function calculateConnectionPreviewPath(
       sourcePos,
       sourceNode
     })
+
+    // If hovering a node, delegate to the same generator used for final path so preview matches exactly
+    if (opts?.hoveredNode && hoverTargetBox && chosenSide) {
+      return generateArchitectureModeConnectionPathWithTargetSide(
+        sourceNode,
+        opts.hoveredNode,
+        {
+          sourceNodeId: sourceNode.id,
+          sourcePortId,
+          targetNodeId: opts.hoveredNode.id,
+          // Use the chosen side as the target port id during preview
+          targetPortId: chosenSide,
+        },
+        chosenSide
+      )
+    }
 
     const bottomU = maybeBottomUPathForPreview({ isSourceBottomPort, hoverTargetBox, previewEnd, sourceNode, sourcePos, HALF_MARKER })
     if (bottomU) { return bottomU }
@@ -995,8 +1013,8 @@ export function generateArchitectureModeConnectionPathWithTargetSide(
     switch (targetSidePortId) {
       case '__side-left':
       case '__side-right':
-  // Align to the side-port center to match the visible side handle
-  return { x: sideAnchor.x, y: sideAnchor.y }
+        // Align to the side-port center to match the visible side handle
+        return { x: sideAnchor.x, y: sideAnchor.y }
       case '__side-top':
       case '__side-bottom':
       default: {
@@ -1427,6 +1445,7 @@ export function renderConnectionPreviewPath(
       variant: nodeVariant,
       modeId: modeId || 'workflow',
       hoverTargetBox,
+      hoveredNode,
     }
   );
 
