@@ -18,6 +18,8 @@ const isVirtualSidePortId = (id: string) => id.startsWith('__side-')
 
 // Architecture mode fixed sizing (must match WorkflowCanvas getConfigurableDimensions)
 const ARCH_SIZE = 56
+// Architecture mode connection corner radius (keep all 90° bends consistent)
+const ARCH_CONNECTION_RADIUS = 12
 
 // Mode-aware dimensions helper
 function getModeAwareDimensions(node: WorkflowNode, modeId?: string) {
@@ -580,7 +582,7 @@ export function calculateConnectionPreviewPath(
     if (horizontalU) { return horizontalU }
 
     const trimmedEndPreview = trimPointBySide(previewEnd, chosenSide, sourcePos, HALF_MARKER)
-    return generateAdaptiveOrthogonalRoundedPathSmart(sourcePos, trimmedEndPreview, 16, {
+    return generateAdaptiveOrthogonalRoundedPathSmart(sourcePos, trimmedEndPreview, ARCH_CONNECTION_RADIUS, {
       clearance: 10,
       targetBox: hoverTargetBox,
       startOrientationOverride: startOrientation,
@@ -829,7 +831,7 @@ function buildHorizontalU(params: {
       { x: midX, y: trimmedEnd.y },
       { x: trimmedEnd.x, y: trimmedEnd.y }
     ]
-    return buildRoundedPathFromPoints(points, 10)
+    return buildRoundedPathFromPoints(points, ARCH_CONNECTION_RADIUS)
   } else {
     if (startSide !== 'left' || targetSidePortId !== '__side-left') { return null }
     const isCloseHorizontally = (sourcePos.x - targetNode.x) < FIXED_LEAD_LENGTH
@@ -848,7 +850,7 @@ function buildHorizontalU(params: {
       { x: midX, y: trimmedEnd.y },
       { x: trimmedEnd.x, y: trimmedEnd.y }
     ]
-    return buildRoundedPathFromPoints(points, 10)
+    return buildRoundedPathFromPoints(points, ARCH_CONNECTION_RADIUS)
   }
 }
 
@@ -940,7 +942,7 @@ function generateArchitectureModeConnectionPath(
       { x: bottomUTrimmedEnd.x, y: midY },
       { x: bottomUTrimmedEnd.x, y: bottomUTrimmedEnd.y }
     ]
-    return buildRoundedPathFromPoints(points, 10)
+    return buildRoundedPathFromPoints(points, ARCH_CONNECTION_RADIUS)
   }
 
   // Horizontal U-shapes for close proximity
@@ -970,7 +972,7 @@ function generateArchitectureModeConnectionPath(
     cachedBuildNodeBoxModeAware
   }); if (leftU) { return leftU }
 
-  return generateAdaptiveOrthogonalRoundedPathSmart(sourcePos, trimmedEnd, 16, {
+  return generateAdaptiveOrthogonalRoundedPathSmart(sourcePos, trimmedEnd, ARCH_CONNECTION_RADIUS, {
     clearance: 10,
     targetBox: cachedBuildNodeBoxModeAware(targetNode),
     startOrientationOverride: startOrientation,
@@ -1044,7 +1046,7 @@ export function generateArchitectureModeConnectionPathWithTargetSide(
       { x: bottomUTrimmedEnd.x, y: midY },
       { x: bottomUTrimmedEnd.x, y: bottomUTrimmedEnd.y }
     ]
-    return buildRoundedPathFromPoints(points, 10)
+    return buildRoundedPathFromPoints(points, ARCH_CONNECTION_RADIUS)
   }
 
   // Horizontal U-shapes for close proximity (mirror logic from base function)
@@ -1074,7 +1076,7 @@ export function generateArchitectureModeConnectionPathWithTargetSide(
     cachedBuildNodeBoxModeAware
   }); if (leftU) { return leftU }
 
-  return generateAdaptiveOrthogonalRoundedPathSmart(sourcePos, trimmedEnd, 16, {
+  return generateAdaptiveOrthogonalRoundedPathSmart(sourcePos, trimmedEnd, ARCH_CONNECTION_RADIUS, {
     clearance: 10,
     targetBox: cachedBuildNodeBoxModeAware(targetNode),
     startOrientationOverride: startOrientation,
