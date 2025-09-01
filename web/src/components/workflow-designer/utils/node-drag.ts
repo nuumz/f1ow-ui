@@ -70,6 +70,9 @@ export function createNodeDragBehavior(params: CreateNodeDragBehaviorParams) {
         setDraggedElementRef,
     } = params;
 
+    // Throttle context drag position updates to avoid per-move dispatch loops
+    let lastContextDragUpdate = 0;
+
     function dragStarted(this: any, event: any, d: WorkflowNode) {
         if (isConnectingRef.current || dragConnectionDataRef.current) {
             event?.sourceEvent?.stopPropagation?.();
@@ -106,6 +109,8 @@ export function createNodeDragBehavior(params: CreateNodeDragBehaviorParams) {
         visualUpdateQueueRef.current.clear();
 
         startDragging(d.id, { x: d.x, y: d.y });
+        // Initialize throttled current position update once on start
+        updateDragPosition(d.x, d.y);
         const nodeElement = d3.select(this);
         nodeElement.classed('dragging', true);
         setDraggedElementRef?.(nodeElement);
@@ -147,7 +152,12 @@ export function createNodeDragBehavior(params: CreateNodeDragBehaviorParams) {
         const deltaX = currentCanvasX - dragData.dragStartX;
         const deltaY = currentCanvasY - dragData.dragStartY;
 
-        updateDragPosition(currentCanvasX, currentCanvasY);
+        // Throttle context position dispatch to ~20fps to prevent update-depth warnings
+        const now = Date.now();
+        if (now - lastContextDragUpdate > 50) {
+            lastContextDragUpdate = now;
+            updateDragPosition(currentCanvasX, currentCanvasY);
+        }
 
         if (Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5) {
             dragData.hasDragged = true;

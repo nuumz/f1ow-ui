@@ -1237,10 +1237,10 @@ export function WorkflowProvider({ children, initialWorkflow }: WorkflowProvider
     dispatch,
   ]);
 
-  // Auto-save after drag operations complete (without triggering re-render)
+  // Auto-save after drag operations complete (optimized with debouncing)
   useEffect(() => {
     if (!state.connectionState.isConnecting && state.isDirty && state.nodes.length > 0) {
-      // If we just finished a drag operation and need to save
+      // Debounce auto-save to prevent multiple saves during rapid changes
       const dragEndAutoSaveTimer = setTimeout(() => {
         logger.info('Silent auto-save triggered after drag completion (no re-render)');
 
@@ -1259,126 +1259,155 @@ export function WorkflowProvider({ children, initialWorkflow }: WorkflowProvider
 
         // Direct auto-save without Redux action
         autoSaveDraftWorkflow(draftData);
-      }, 250); // 250ms delay after drag ends
+      }, 500); // Increased delay to 500ms for better debouncing
 
       return () => clearTimeout(dragEndAutoSaveTimer);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     state.connectionState.isConnecting,
     state.isDirty,
     state.nodes,
     state.connections,
     state.workflowName,
-    state.canvasTransform,
+    // Remove canvasTransform from dependencies to prevent auto-save on every pan/zoom
     state.designerMode,
     state.architectureMode,
   ]);
 
   // Split context value into separate memoized objects to reduce re-renders
-  const coreDataValue = useMemo(() => ({
-    workflowName: state.workflowName,
-    nodes: state.nodes,
-    connections: state.connections,
-    designerMode: state.designerMode,
-    architectureMode: state.architectureMode,
-    isDirty: state.isDirty,
-    lastSaved: state.lastSaved,
-  }), [
-    state.workflowName,
-    state.nodes,
-    state.connections,
-    state.designerMode,
-    state.architectureMode,
-    state.isDirty,
-    state.lastSaved,
-  ]);
+  const coreDataValue = useMemo(
+    () => ({
+      workflowName: state.workflowName,
+      nodes: state.nodes,
+      connections: state.connections,
+      designerMode: state.designerMode,
+      architectureMode: state.architectureMode,
+      isDirty: state.isDirty,
+      lastSaved: state.lastSaved,
+    }),
+    [
+      state.workflowName,
+      state.nodes,
+      state.connections,
+      state.designerMode,
+      state.architectureMode,
+      state.isDirty,
+      state.lastSaved,
+    ]
+  );
 
-  const selectionValue = useMemo(() => ({
-    selectedNodes: state.selectedNodes,
-    selectedNode: state.selectedNode,
-  }), [state.selectedNodes, state.selectedNode]);
+  const selectionValue = useMemo(
+    () => ({
+      selectedNodes: state.selectedNodes,
+      selectedNode: state.selectedNode,
+    }),
+    [state.selectedNodes, state.selectedNode]
+  );
 
-  const canvasValue = useMemo(() => ({
-    canvasTransform: state.canvasTransform,
-    draggingState: state.draggingState,
-  }), [state.canvasTransform, state.draggingState]);
+  const canvasValue = useMemo(
+    () => ({
+      canvasTransform: state.canvasTransform,
+      draggingState: state.draggingState,
+    }),
+    [state.canvasTransform, state.draggingState]
+  );
 
-  const connectionValue = useMemo(() => ({
-    connectionState: state.connectionState,
-  }), [state.connectionState]);
+  const connectionValue = useMemo(
+    () => ({
+      connectionState: state.connectionState,
+    }),
+    [state.connectionState]
+  );
 
   // Stable function references (only recreated when dependencies change)
-  const stableFunctions = useMemo(() => ({
-    dispatch,
-    isNodeSelected,
-    getSelectedNodesList,
-    canDropOnPort,
-    canDropOnNode,
-    validateConnections,
-    saveConnectionsToStorage,
-    loadConnectionsFromStorage: loadConnectionsFromStorageHandler,
-    toggleAutoSave,
-    saveDraft,
-    loadDraft,
-    autoSaveDraft,
-    deleteDraft,
-    listDrafts,
-    getStorageStats,
-    getAutoSaveStatus,
-    setDesignerMode,
-    batchOperations,
-    startDragging,
-    updateDragPosition,
-    endDragging,
-    isDragging,
-    getDraggedNodeId,
-  }), [
-    dispatch,
-    isNodeSelected,
-    getSelectedNodesList,
-    canDropOnPort,
-    canDropOnNode,
-    validateConnections,
-    saveConnectionsToStorage,
-    loadConnectionsFromStorageHandler,
-    toggleAutoSave,
-    saveDraft,
-    loadDraft,
-    autoSaveDraft,
-    deleteDraft,
-    listDrafts,
-    getStorageStats,
-    getAutoSaveStatus,
-    setDesignerMode,
-    batchOperations,
-    startDragging,
-    updateDragPosition,
-    endDragging,
-    isDragging,
-    getDraggedNodeId,
-  ]);
+  const stableFunctions = useMemo(
+    () => ({
+      dispatch,
+      isNodeSelected,
+      getSelectedNodesList,
+      canDropOnPort,
+      canDropOnNode,
+      validateConnections,
+      saveConnectionsToStorage,
+      loadConnectionsFromStorage: loadConnectionsFromStorageHandler,
+      toggleAutoSave,
+      saveDraft,
+      loadDraft,
+      autoSaveDraft,
+      deleteDraft,
+      listDrafts,
+      getStorageStats,
+      getAutoSaveStatus,
+      setDesignerMode,
+      batchOperations,
+      startDragging,
+      updateDragPosition,
+      endDragging,
+      isDragging,
+      getDraggedNodeId,
+    }),
+    [
+      dispatch,
+      isNodeSelected,
+      getSelectedNodesList,
+      canDropOnPort,
+      canDropOnNode,
+      validateConnections,
+      saveConnectionsToStorage,
+      loadConnectionsFromStorageHandler,
+      toggleAutoSave,
+      saveDraft,
+      loadDraft,
+      autoSaveDraft,
+      deleteDraft,
+      listDrafts,
+      getStorageStats,
+      getAutoSaveStatus,
+      setDesignerMode,
+      batchOperations,
+      startDragging,
+      updateDragPosition,
+      endDragging,
+      isDragging,
+      getDraggedNodeId,
+    ]
+  );
 
   // Main context value with separated concerns
-  const contextValue: WorkflowContextType = useMemo(() => ({
-    // Combine all state slices
-    state: {
-      ...coreDataValue,
-      ...selectionValue,
-      ...canvasValue,
-      ...connectionValue,
-      executionState: state.executionState,
-      uiState: state.uiState,
-      autoSaveState: state.autoSaveState,
-      currentDraftId: state.currentDraftId,
-    },
-    
-    // Stable refs
-    svgRef,
-    containerRef,
-    
-    // Stable functions
-    ...stableFunctions,
-  }), [coreDataValue, selectionValue, canvasValue, connectionValue, state.executionState, state.uiState, state.autoSaveState, state.currentDraftId, stableFunctions]);
+  const contextValue: WorkflowContextType = useMemo(
+    () => ({
+      // Combine all state slices
+      state: {
+        ...coreDataValue,
+        ...selectionValue,
+        ...canvasValue,
+        ...connectionValue,
+        executionState: state.executionState,
+        uiState: state.uiState,
+        autoSaveState: state.autoSaveState,
+        currentDraftId: state.currentDraftId,
+      },
+
+      // Stable refs
+      svgRef,
+      containerRef,
+
+      // Stable functions
+      ...stableFunctions,
+    }),
+    [
+      coreDataValue,
+      selectionValue,
+      canvasValue,
+      connectionValue,
+      state.executionState,
+      state.uiState,
+      state.autoSaveState,
+      state.currentDraftId,
+      stableFunctions,
+    ]
+  );
 
   return <WorkflowContext.Provider value={contextValue}>{children}</WorkflowContext.Provider>;
 }
@@ -1413,7 +1442,7 @@ export function useSelectedNodes(): WorkflowNode[] {
     if (state.selectedNodes.size === 0) {
       return [];
     }
-    return state.nodes.filter(node => state.selectedNodes.has(node.id));
+    return state.nodes.filter((node) => state.selectedNodes.has(node.id));
   }, [state.nodes, state.selectedNodes]);
 }
 
@@ -1427,7 +1456,7 @@ export function useSelectedNodesSet(): Set<string> {
 export function useNodeById(nodeId: string): WorkflowNode | null {
   const { state } = useWorkflowContext();
   return useMemo(() => {
-    return state.nodes.find(node => node.id === nodeId) || null;
+    return state.nodes.find((node) => node.id === nodeId) || null;
   }, [state.nodes, nodeId]);
 }
 
@@ -1475,7 +1504,7 @@ export function useNodesByType(nodeType?: string): WorkflowNode[] {
     if (!nodeType) {
       return state.nodes;
     }
-    return state.nodes.filter(node => node.type === nodeType);
+    return state.nodes.filter((node) => node.type === nodeType);
   }, [state.nodes, nodeType]);
 }
 
@@ -1485,15 +1514,15 @@ export function useConnectionMetrics() {
   return useMemo(() => {
     const connections = state.connections;
     const totalConnections = connections.length;
-    const validConnections = connections.filter(conn => conn.validated !== false).length;
+    const validConnections = connections.filter((conn) => conn.validated !== false).length;
     const invalidConnections = totalConnections - validConnections;
-    
+
     // Calculate node connection degrees
     const connectionCounts = new Map<string, { incoming: number; outgoing: number }>();
-    connections.forEach(conn => {
+    connections.forEach((conn) => {
       const source = connectionCounts.get(conn.sourceNodeId) || { incoming: 0, outgoing: 0 };
       const target = connectionCounts.get(conn.targetNodeId) || { incoming: 0, outgoing: 0 };
-      
+
       connectionCounts.set(conn.sourceNodeId, { ...source, outgoing: source.outgoing + 1 });
       connectionCounts.set(conn.targetNodeId, { ...target, incoming: target.incoming + 1 });
     });
@@ -1514,12 +1543,12 @@ export function useWorkflowComplexity() {
   return useMemo(() => {
     const nodeCount = state.nodes.length;
     const connectionCount = state.connections.length;
-    const uniqueNodeTypes = new Set(state.nodes.map(n => n.type)).size;
-    
+    const uniqueNodeTypes = new Set(state.nodes.map((n) => n.type)).size;
+
     // Calculate complexity metrics
-    const density = nodeCount > 1 ? connectionCount / (nodeCount * (nodeCount - 1) / 2) : 0;
+    const density = nodeCount > 1 ? connectionCount / ((nodeCount * (nodeCount - 1)) / 2) : 0;
     const averageDegree = nodeCount > 0 ? (connectionCount * 2) / nodeCount : 0;
-    
+
     let complexityScore = 'simple';
     if (nodeCount > 50 || connectionCount > 100 || uniqueNodeTypes > 10) {
       complexityScore = 'complex';
@@ -1555,7 +1584,7 @@ export function useVisibleNodes(
     const minY = viewport.y - buffer;
     const maxY = viewport.y + viewport.height + buffer;
 
-    return state.nodes.filter(node => {
+    return state.nodes.filter((node) => {
       return node.x >= minX && node.x <= maxX && node.y >= minY && node.y <= maxY;
     });
   }, [state.nodes, viewport, bufferSize]);
@@ -1565,8 +1594,8 @@ export function useVisibleNodes(
 export function useNodeConnections(nodeId: string) {
   const { state } = useWorkflowContext();
   return useMemo(() => {
-    const incoming = state.connections.filter(conn => conn.targetNodeId === nodeId);
-    const outgoing = state.connections.filter(conn => conn.sourceNodeId === nodeId);
+    const incoming = state.connections.filter((conn) => conn.targetNodeId === nodeId);
+    const outgoing = state.connections.filter((conn) => conn.sourceNodeId === nodeId);
     return { incoming, outgoing, total: incoming.length + outgoing.length };
   }, [state.connections, nodeId]);
 }
@@ -1574,17 +1603,20 @@ export function useNodeConnections(nodeId: string) {
 // eslint-disable-next-line react-refresh/only-export-components
 export function useDragState() {
   const { state } = useWorkflowContext();
-  return useMemo(() => ({
-    isDragging: state.draggingState.isDragging,
-    draggedNodeId: state.draggingState.draggedNodeId,
-    dragStartPosition: state.draggingState.dragStartPosition,
-    currentPosition: state.draggingState.currentPosition,
-  }), [
-    state.draggingState.isDragging,
-    state.draggingState.draggedNodeId,
-    state.draggingState.dragStartPosition,
-    state.draggingState.currentPosition,
-  ]);
+  return useMemo(
+    () => ({
+      isDragging: state.draggingState.isDragging,
+      draggedNodeId: state.draggingState.draggedNodeId,
+      dragStartPosition: state.draggingState.dragStartPosition,
+      currentPosition: state.draggingState.currentPosition,
+    }),
+    [
+      state.draggingState.isDragging,
+      state.draggingState.draggedNodeId,
+      state.draggingState.dragStartPosition,
+      state.draggingState.currentPosition,
+    ]
+  );
 }
 
 // eslint-disable-next-line react-refresh/only-export-components
@@ -1596,17 +1628,20 @@ export function useCanvasTransform(): CanvasTransform {
 // eslint-disable-next-line react-refresh/only-export-components
 export function useConnectionState() {
   const { state } = useWorkflowContext();
-  return useMemo(() => ({
-    isConnecting: state.connectionState.isConnecting,
-    connectionStart: state.connectionState.connectionStart,
-    connectionPreview: state.connectionState.connectionPreview,
-    selectedConnection: state.connectionState.selectedConnection,
-  }), [
-    state.connectionState.isConnecting,
-    state.connectionState.connectionStart,
-    state.connectionState.connectionPreview,
-    state.connectionState.selectedConnection,
-  ]);
+  return useMemo(
+    () => ({
+      isConnecting: state.connectionState.isConnecting,
+      connectionStart: state.connectionState.connectionStart,
+      connectionPreview: state.connectionState.connectionPreview,
+      selectedConnection: state.connectionState.selectedConnection,
+    }),
+    [
+      state.connectionState.isConnecting,
+      state.connectionState.connectionStart,
+      state.connectionState.connectionPreview,
+      state.connectionState.selectedConnection,
+    ]
+  );
 }
 
 // (Types relocated to WorkflowContextExports.ts to satisfy Fast Refresh constraints)

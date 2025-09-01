@@ -652,7 +652,7 @@ function WorkflowCanvas({
     [showGrid, dbg]
   );
 
-  // Enhanced cache and memory management utilities (connection path cache handled by hook)
+  // Enhanced cache and memory management utilities with aggressive cleanup
   const cleanupCaches = useCallback(() => {
     // Clean node position cache if too large (reduced logging)
     if (nodePositionCacheRef.current.size > CACHE_CLEANUP_THRESHOLD) {
@@ -670,16 +670,21 @@ function WorkflowCanvas({
     const now = performance.now();
     if (
       gridCacheRef.current &&
-      now - gridCacheRef.current.lastRenderTime > GRID_CACHE_DURATION * 2
+      now - gridCacheRef.current.lastRenderTime > GRID_CACHE_DURATION * 1.5 // Reduced from 2x to 1.5x for more aggressive cleanup
     ) {
       gridCacheRef.current = null;
+    }
+
+    // Force garbage collection hint (if available in dev tools)
+    if (process.env.NODE_ENV === 'development' && 'gc' in window && Math.random() < 0.1) {
+      (window as any).gc();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Constants don't need to be included in dependencies
 
-  // Schedule regular cache cleanup every 30 seconds
+  // Schedule more frequent cache cleanup for better memory management
   useEffect(() => {
-    const cleanupInterval = setInterval(cleanupCaches, 30000);
+    const cleanupInterval = setInterval(cleanupCaches, 20000); // Reduced from 30s to 20s
     return () => clearInterval(cleanupInterval);
   }, [cleanupCaches]);
 
@@ -1430,17 +1435,8 @@ function WorkflowCanvas({
         dbg,
       });
 
-      // Canvas event handlers
-      svg.on('click', () => {
-        onCanvasClick();
-      });
-
-      svg.on('mousemove', (event) => {
-        const [x, y] = d3.pointer(event, svg.node());
-        const transform = d3.zoomTransform(svg.node() as any);
-        const [canvasX, canvasY] = transform.invert([x, y]);
-        onCanvasMouseMove(canvasX, canvasY);
-      });
+      // Canvas event handlers are bound in a dedicated effect below with namespaced listeners
+      // to avoid duplicate bindings and stale closures.
 
       // Initialize or refresh roving tabindex on all port groups after rendering
       if (svgRef.current) {
@@ -1625,53 +1621,78 @@ function WorkflowCanvas({
       return;
     }
     const svg = d3.select(svgRef.current);
+    let mouseMoveThrottleId: number | null = null;
+
     svg.on('click.canvas', () => onCanvasClick());
+
+    // Throttled mouse move for better performance
     svg.on('mousemove.canvas', (event) => {
-      const [x, y] = d3.pointer(event, svg.node());
-      const transform = d3.zoomTransform(svg.node() as any);
-      const [canvasX, canvasY] = transform.invert([x, y]);
-      onCanvasMouseMove(canvasX, canvasY);
+      if (mouseMoveThrottleId !== null) {
+        return; // Skip if already throttled
+      }
+
+      mouseMoveThrottleId = requestAnimationFrame(() => {
+        const [x, y] = d3.pointer(event, svg.node());
+        const transform = d3.zoomTransform(svg.node() as any);
+        const [canvasX, canvasY] = transform.invert([x, y]);
+        onCanvasMouseMove(canvasX, canvasY);
+        mouseMoveThrottleId = null;
+      });
     });
+
     return () => {
       svg.on('click.canvas', null).on('mousemove.canvas', null);
+      if (mouseMoveThrottleId !== null) {
+        cancelAnimationFrame(mouseMoveThrottleId);
+      }
     };
   }, [onCanvasClick, onCanvasMouseMove, svgRef]);
 
-  // 🎯 ISOLATED GRID EFFECT - Completely separate grid management with cache protection
+  // Extract rounded transform values for grid performance optimization
+  const roundedX = useMemo(() => Math.round(canvasTransform.x / 10) * 10, [canvasTransform.x]); // 10px tolerance
+  const roundedY = useMemo(() => Math.round(canvasTransform.y / 10) * 10, [canvasTransform.y]); // 10px tolerance
+  const roundedK = useMemo(() => Math.round(canvasTransform.k * 100) / 100, [canvasTransform.k]); // 2 decimal places
+
+  // 🎯 ISOLATED GRID EFFECT - Optimized with throttling and reduced sensitivity
   useEffect(() => {
     // Only recreate grid when absolutely necessary to maximize cache hits
     if (!svgRef.current || !isInitialized || !showGrid) {
       return;
     }
 
-    try {
-      const svg = d3.select(svgRef.current);
-      const gridLayer = svg.select('.grid-layer');
+    // Throttle grid updates during rapid canvas transform changes
+    const throttleTimeout = setTimeout(() => {
+      try {
+        const svg = d3.select(svgRef.current);
+        const gridLayer = svg.select('.grid-layer');
 
-      if (gridLayer.empty()) {
-        return;
-      }
+        if (gridLayer.empty()) {
+          return;
+        }
 
-      // Get current canvas dimensions
-      const rect = svgRef.current.getBoundingClientRect();
+        // Get current canvas dimensions (safe access)
+        const rect = svgRef.current!.getBoundingClientRect();
 
-      // CRITICAL: Don't clear existing grid - let createGrid handle cache validation
-      // This prevents unnecessary grid clearing that reduces cache hit rate
-      const gridLayerElement = gridLayer.node();
-      if (gridLayerElement) {
-        const typedGridLayer = d3.select(gridLayerElement as SVGGElement);
-        createGridCallback(typedGridLayer, canvasTransform, rect.width, rect.height);
+        // CRITICAL: Don't clear existing grid - let createGrid handle cache validation
+        // This prevents unnecessary grid clearing that reduces cache hit rate
+        const gridLayerElement = gridLayer.node();
+        if (gridLayerElement) {
+          const typedGridLayer = d3.select(gridLayerElement as SVGGElement);
+          createGridCallback(typedGridLayer, canvasTransform, rect.width, rect.height);
+        }
+      } catch (error) {
+        console.error('Error in grid rendering effect:', error);
+        // Reset grid cache on error
+        if (gridCacheRef.current) {
+          gridCacheRef.current = null;
+        }
       }
-    } catch (error) {
-      console.error('Error in grid rendering effect:', error);
-      // Reset grid cache on error
-      if (gridCacheRef.current) {
-        gridCacheRef.current = null;
-      }
-    }
+    }, 50); // 50ms throttle to reduce grid re-renders during drag operations
+
+    return () => clearTimeout(throttleTimeout);
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showGrid, canvasTransform.x, canvasTransform.y, canvasTransform.k, isInitialized]); // Don't include createGrid to prevent loops
+  }, [showGrid, roundedX, roundedY, roundedK, isInitialized]); // Reduced sensitivity dependencies
 
   // Remove duplicate CSS since hover styles are already in globals.css
 
@@ -1858,19 +1879,8 @@ function WorkflowCanvas({
     return () => window.removeEventListener('keydown', onKeyDown, { capture: true } as any);
   }, [dispatch, onPortDragEndProp]);
 
-  // Canvas state effect
-  useEffect(() => {
-    if (!svgRef.current || !isInitialized) {
-      return;
-    }
-
-    const svg = d3.select(svgRef.current);
-    const gridLayer = svg.select('.grid-layer');
-
-    // Update grid and toolbar
-    const rect = svgRef.current.getBoundingClientRect();
-    createGridCallback(gridLayer as any, canvasTransform, rect.width, rect.height);
-  }, [canvasTransform, isInitialized, createGridCallback, svgRef]);
+  // Canvas state effect removed for grid updates; the isolated grid effect above handles
+  // all grid rendering to maximize cache hits and prevent redundant work.
 
   // Cleanup effect
   useEffect(() => {

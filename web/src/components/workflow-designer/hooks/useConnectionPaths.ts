@@ -137,12 +137,14 @@ export function useConnectionPaths(
       return;
     }
 
-    // Probabilistic pruning
+    // More aggressive probabilistic pruning for better performance
     const overBy = size - MAX_CACHE_SIZE;
-    const pressureRatio = Math.min(1, overBy / (MAX_CACHE_SIZE * 0.5));
-    const baseSample = 0.02 + pressureRatio * 0.08; // 2%-10%
-    const softTarget = Math.floor(MAX_CACHE_SIZE * 0.95);
+    const pressureRatio = Math.min(1, overBy / (MAX_CACHE_SIZE * 0.3)); // Reduced threshold 
+    const baseSample = 0.01 + pressureRatio * 0.05; // Reduced sampling: 1%-6%
+    const softTarget = Math.floor(MAX_CACHE_SIZE * 0.98); // Higher retention target
     let removed = 0;
+
+    // First pass: remove with lower probability to keep more useful entries
     for (const key of cache.keys()) {
       if (cache.size <= softTarget) {
         break;
@@ -152,8 +154,10 @@ export function useConnectionPaths(
         removed++;
       }
     }
+
+    // Only do hard cleanup if still over threshold
     if (cache.size > CACHE_CLEANUP_THRESHOLD) {
-      const toRemove = cache.size - CACHE_CLEANUP_THRESHOLD;
+      const toRemove = Math.min(cache.size - CACHE_CLEANUP_THRESHOLD, Math.floor(cache.size * 0.1)); // Max 10% removal
       let i = 0;
       for (const key of cache.keys()) {
         cache.delete(key);
@@ -163,8 +167,10 @@ export function useConnectionPaths(
         }
       }
     }
-    if (removed > 0 && process.env.NODE_ENV === 'development') {
-      console.warn('[useConnectionPaths] cache pruned by', removed);
+
+    // Reduced dev logging frequency
+    if (removed > 0 && process.env.NODE_ENV === 'development' && Math.random() < 0.1) {
+      console.warn('[useConnectionPaths] cache pruned by', removed, `(${cache.size} remaining)`);
     }
   }, []);
 
