@@ -20,8 +20,8 @@ import {
 import './WorkflowDesigner.scss';
 
 // Import provider and hooks
-import { 
-  WorkflowProvider, 
+import {
+  WorkflowProvider,
   useWorkflowContext,
   useWorkflowNodes,
   useWorkflowConnections,
@@ -242,10 +242,14 @@ function WorkflowDesignerContent({
   const connectionMetrics = useConnectionMetrics();
 
   // Performance monitoring
-  const { performanceSummary } = usePerformanceInspector('WorkflowDesigner', {
-    maxRenderTime: workflowComplexity.complexityScore === 'complex' ? 32 : 16, // Higher threshold for complex workflows
-    memoryWarningThreshold: 100 * 1024 * 1024, // 100MB for WorkflowDesigner
-  });
+  const { performanceSummary } = usePerformanceInspector(
+    'WorkflowDesigner',
+    {
+      maxRenderTime: workflowComplexity.complexityScore === 'complex' ? 32 : 16, // Higher threshold for complex workflows
+      memoryWarningThreshold: 100 * 1024 * 1024, // 100MB for WorkflowDesigner
+    },
+    process.env.NODE_ENV === 'development' && !connectionState.isConnecting // disable during drag/connect to avoid false positives
+  );
 
   // Simple ID generator utility for architecture nodes
   const generateId = useCallback((): string => {
@@ -448,13 +452,15 @@ function WorkflowDesignerContent({
           x: sourceNode.x + (Math.random() - 0.5) * 100,
           y: sourceNode.y + 150,
         };
-        const nextType = suggestNextNodeType('microservice', designerMode as 'workflow' | 'architecture');
+        const nextType = suggestNextNodeType(
+          'microservice',
+          designerMode as 'workflow' | 'architecture'
+        );
         handleAddArchitectureNode(nextType, newNodePosition);
       }
     },
     [handleAddArchitectureNode, operations, designerMode, nodes]
   );
-
 
   // File operations
   const [isLoading, setIsLoading] = useState(false);
@@ -782,9 +788,7 @@ function WorkflowDesignerContent({
               style={{ cursor: readOnly ? 'default' : 'pointer' }}
             >
               <div>
-                <span className="workflow-name-label">
-                  {workflowName || 'Unnamed Workflow'}
-                </span>
+                <span className="workflow-name-label">{workflowName || 'Unnamed Workflow'}</span>
                 <span className={`workflow-mode-badge ${designerMode}`}>
                   {designerMode === 'workflow' ? 'Workflow' : 'Architecture'}
                 </span>
@@ -828,11 +832,7 @@ function WorkflowDesignerContent({
                   onClick={handleExecute}
                   className="action-button execute-button"
                   title="Execute Workflow"
-                  disabled={
-                    executionState.status === 'running' ||
-                    isLoading ||
-                    nodes.length === 0
-                  }
+                  disabled={executionState.status === 'running' || isLoading || nodes.length === 0}
                 >
                   <Play size={16} />
                   {executionState.status === 'running' ? 'Running...' : 'Execute'}
@@ -893,7 +893,7 @@ function WorkflowDesignerContent({
               <span>Selected: {selectedNodesSet.size}</span>
               <span>Zoom: {Math.round(canvasTransform.k * 100)}%</span>
               {performanceSummary && process.env.NODE_ENV === 'development' && (
-                <span 
+                <span
                   className={`performance-indicator ${performanceSummary.isPerformant ? 'good' : 'warning'}`}
                   title={`Avg Render: ${performanceSummary.avgRenderTime.toFixed(1)}ms | Memory: ${performanceSummary.memoryUsage ? `${(performanceSummary.memoryUsage / 1024 / 1024).toFixed(1)}MB` : 'N/A'}`}
                 >
@@ -916,9 +916,7 @@ function WorkflowDesignerContent({
                 >
                   {executionState.status.toUpperCase()}
                 </span>
-                {executionState.currentNode && (
-                  <span>Current: {executionState.currentNode}</span>
-                )}
+                {executionState.currentNode && <span>Current: {executionState.currentNode}</span>}
                 {executionState.status === 'completed' &&
                   executionState.endTime &&
                   executionState.startTime &&
@@ -1046,8 +1044,7 @@ function WorkflowDesignerContent({
             onFitToScreen={() => canvas.fitToScreen(nodes)}
             onResetPosition={() => canvas.resetCanvasPosition(nodes)}
             {...(designerMode === 'workflow' && {
-              executionStatus:
-                executionState.status === 'paused' ? 'idle' : executionState.status,
+              executionStatus: executionState.status === 'paused' ? 'idle' : executionState.status,
             })}
             selectedNodeCount={selectedNodesSet.size}
             onDeleteSelected={
