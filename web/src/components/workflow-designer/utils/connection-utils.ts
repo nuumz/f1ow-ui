@@ -405,9 +405,12 @@ function maybeHorizontalUPathForPreview(args: {
     }
   }
   if (startSidePrev === 'left') {
-    const isCloseHorizontally = (sourcePos.x - centerX) < FIXED_LEAD_LENGTH
+    // Use the target's left edge center for proximity and ensure target is actually to the left (dx>0)
+    const leftEdgeCenter = { x: hoverTargetBox.x, y: centerY }
+    const dxLeft = sourcePos.x - leftEdgeCenter.x
+    const isCloseHorizontally = dxLeft > 0 && dxLeft < FIXED_LEAD_LENGTH
     if (isCloseHorizontally) {
-      const leftEdgeCenter = { x: hoverTargetBox.x, y: centerY }
+      // leftEdgeCenter computed above
       const boxesLeft = Math.min(srcBox.x, hoverTargetBox.x)
       const minLeft = Math.min(sourcePos.x, leftEdgeCenter.x) - FIXED_LEAD_LENGTH
       const midX = Math.min(boxesLeft - safeClear, minLeft)
@@ -871,7 +874,10 @@ function buildHorizontalU(params: {
     return buildRoundedPathFromPoints(points, ARCH_CONNECTION_RADIUS)
   } else {
     if (startSide !== 'left' || targetSidePortId !== '__side-left') { return null }
-    const isCloseHorizontally = (sourcePos.x - targetNode.x) < FIXED_LEAD_LENGTH
+    // Use distance to the target's left-side port (forcedPos) instead of the node's left edge.
+    // Also ensure the target is actually to the left (dx > 0) to avoid false triggers.
+    const dxLeft = sourcePos.x - forcedPos.x
+    const isCloseHorizontally = dxLeft > 0 && dxLeft < FIXED_LEAD_LENGTH
     if (!isCloseHorizontally) { return null }
     const srcBox = cachedBuildNodeBoxModeAware(sourceNode)
     const tgtBox = cachedBuildNodeBoxModeAware(targetNode)
