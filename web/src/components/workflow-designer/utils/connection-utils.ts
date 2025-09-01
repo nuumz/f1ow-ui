@@ -9,6 +9,18 @@ import * as d3 from 'd3'
 import { getShapeAwareDimensions, NODE_WIDTH, NODE_MIN_HEIGHT } from './node-utils'
 import { computePortVisualAttributes, applyPortVisualAttributes } from './port-visuals'
 
+// U-Shape routing constants (centralized for easy tuning)
+const U_SHAPE_CONFIG = {
+  // Proximity threshold for triggering U-shape routing
+  PROXIMITY_THRESHOLD: FIXED_LEAD_LENGTH, // 50px
+  // Safe clearance around node boxes
+  SAFE_CLEARANCE: 16,
+  // Arrowhead trimming distance
+  MARKER_TRIM: 5.5,
+  // Buffer for obstacle detection
+  OBSTACLE_BUFFER: 20
+} as const
+
 // Type aliases
 type MarkerState = 'default' | 'selected' | 'hover';
 export type DesignerMode = 'workflow' | 'architecture' | undefined;
@@ -361,7 +373,7 @@ function maybeBottomUPathForPreview(args: {
   const srcBox = buildNodeBox(sourceNode)
   const targetBottomY = hoverTargetBox.y + hoverTargetBox.height
   const boxesBottom = Math.max(srcBox.y + srcBox.height, targetBottomY)
-  const safeClear = 16
+  const safeClear = U_SHAPE_CONFIG.SAFE_CLEARANCE
   const minBelow = Math.max(sourcePos.y, targetBottomY) + FIXED_LEAD_LENGTH
   const midY = Math.max(boxesBottom + safeClear, minBelow)
   // Trim end by marker size using shared helper to align arrow tip with bottom edge
@@ -374,6 +386,41 @@ function maybeBottomUPathForPreview(args: {
   ].join(' ')
 }
 
+// Helper: check if there are obstacles in the U-path area (basic implementation)
+function hasObstacleInPath(
+  midX: number,
+  sourceY: number,
+  targetY: number,
+  availableNodes?: WorkflowNode[],
+  excludeNodes: string[] = []
+): boolean {
+  if (!availableNodes || availableNodes.length === 0) {
+    return false
+  }
+
+  const minY = Math.min(sourceY, targetY) - U_SHAPE_CONFIG.OBSTACLE_BUFFER
+  const maxY = Math.max(sourceY, targetY) + U_SHAPE_CONFIG.OBSTACLE_BUFFER
+
+  return availableNodes.some(node => {
+    if (excludeNodes.includes(node.id)) {
+      return false
+    }
+
+    const nodeBox = buildNodeBox(node)
+    const nodeRight = nodeBox.x + nodeBox.width
+    const nodeLeft = nodeBox.x
+    const nodeTop = nodeBox.y
+    const nodeBottom = nodeBox.y + nodeBox.height
+
+    // Check if node intersects with the horizontal part of U-path
+    const horizontalIntersects =
+      (midX >= nodeLeft && midX <= nodeRight) &&
+      (nodeBottom >= minY && nodeTop <= maxY)
+
+    return horizontalIntersects
+  })
+}
+
 // Helper: horizontal U route for preview
 function maybeHorizontalUPathForPreview(args: {
   hoverTargetBox?: { x: number; y: number; width: number; height: number }
@@ -381,21 +428,30 @@ function maybeHorizontalUPathForPreview(args: {
   sourcePortId: string
   sourcePos: PortPosition
   modeId: string
+  availableNodes?: WorkflowNode[]
 }): string | null {
-  const { hoverTargetBox, sourceNode, sourcePortId, sourcePos, modeId } = args
+  const { hoverTargetBox, sourceNode, sourcePortId, sourcePos, modeId, availableNodes } = args
   if (!hoverTargetBox) { return null }
   const startSidePrev = detectPortSideModeAware(sourceNode, sourcePortId, sourcePos, modeId)
   const srcBox = buildNodeBox(sourceNode)
   const centerY = hoverTargetBox.y + hoverTargetBox.height / 2
-  const centerX = hoverTargetBox.x + hoverTargetBox.width / 2
-  const safeClear = 16
+  const safeClear = U_SHAPE_CONFIG.SAFE_CLEARANCE
   if (startSidePrev === 'right') {
-    const isCloseHorizontally = (centerX - sourcePos.x) < FIXED_LEAD_LENGTH
+    // Use target node position instead of centerX for consistency with final mode
+    const targetNodeX = hoverTargetBox.x + hoverTargetBox.width / 2
+    const isCloseHorizontally = (targetNodeX - sourcePos.x) < U_SHAPE_CONFIG.PROXIMITY_THRESHOLD
     if (isCloseHorizontally) {
       const rightEdgeCenter = { x: hoverTargetBox.x + hoverTargetBox.width, y: centerY }
       const boxesRight = Math.max(srcBox.x + srcBox.width, hoverTargetBox.x + hoverTargetBox.width)
       const minRight = Math.max(sourcePos.x, rightEdgeCenter.x) + FIXED_LEAD_LENGTH
       const midX = Math.max(boxesRight + safeClear, minRight)
+
+      // Basic obstacle check
+      const hasObstacle = hasObstacleInPath(midX, sourcePos.y, rightEdgeCenter.y, availableNodes, [sourceNode.id])
+      if (hasObstacle) {
+        return null // Fall back to regular routing
+      }
+
       return [
         `M ${sourcePos.x} ${sourcePos.y}`,
         `L ${midX} ${sourcePos.y}`,
@@ -405,15 +461,22 @@ function maybeHorizontalUPathForPreview(args: {
     }
   }
   if (startSidePrev === 'left') {
-    // Use the target's left edge center for proximity and ensure target is actually to the left (dx>0)
-    const leftEdgeCenter = { x: hoverTargetBox.x, y: centerY }
-    const dxLeft = sourcePos.x - leftEdgeCenter.x
-    const isCloseHorizontally = dxLeft > 0 && dxLeft < FIXED_LEAD_LENGTH
+    // Use target node position and add dx > 0 check for consistency with final mode
+    const targetNodeX = hoverTargetBox.x + hoverTargetBox.width / 2
+    const dxLeft = sourcePos.x - targetNodeX
+    const isCloseHorizontally = dxLeft > 0 && dxLeft < U_SHAPE_CONFIG.PROXIMITY_THRESHOLD
     if (isCloseHorizontally) {
-      // leftEdgeCenter computed above
+      const leftEdgeCenter = { x: hoverTargetBox.x, y: centerY }
       const boxesLeft = Math.min(srcBox.x, hoverTargetBox.x)
       const minLeft = Math.min(sourcePos.x, leftEdgeCenter.x) - FIXED_LEAD_LENGTH
       const midX = Math.min(boxesLeft - safeClear, minLeft)
+
+      // Basic obstacle check
+      const hasObstacle = hasObstacleInPath(midX, sourcePos.y, leftEdgeCenter.y, availableNodes, [sourceNode.id])
+      if (hasObstacle) {
+        return null // Fall back to regular routing
+      }
+
       return [
         `M ${sourcePos.x} ${sourcePos.y}`,
         `L ${midX} ${sourcePos.y}`,
@@ -618,7 +681,7 @@ export function calculateConnectionPreviewPath(
     const bottomU = maybeBottomUPathForPreview({ isSourceBottomPort, hoverTargetBox, previewEnd, sourceNode, sourcePos, HALF_MARKER })
     if (bottomU) { return bottomU }
 
-    const horizontalU = maybeHorizontalUPathForPreview({ hoverTargetBox, sourceNode, sourcePortId, sourcePos, modeId })
+    const horizontalU = maybeHorizontalUPathForPreview({ hoverTargetBox, sourceNode, sourcePortId, sourcePos, modeId, availableNodes: opts?.availableNodes })
     if (horizontalU) { return horizontalU }
 
     const trimmedEndPreview = trimPointBySide(previewEnd, chosenSide, sourcePos, HALF_MARKER)
@@ -855,11 +918,11 @@ function buildHorizontalU(params: {
   const { direction, startSide, targetSidePortId, sourcePos, sourceNode, targetNode, HALF_MARKER, forcedPos, trimSide, cachedBuildNodeBoxModeAware } = params
   if (direction === 'right') {
     if (startSide !== 'right' || targetSidePortId !== '__side-right') { return null }
-    const isCloseHorizontally = (targetNode.x - sourcePos.x) < FIXED_LEAD_LENGTH
+    const isCloseHorizontally = (targetNode.x - sourcePos.x) < U_SHAPE_CONFIG.PROXIMITY_THRESHOLD
     if (!isCloseHorizontally) { return null }
     const srcBox = cachedBuildNodeBoxModeAware(sourceNode)
     const tgtBox = cachedBuildNodeBoxModeAware(targetNode)
-    const safeClear = 16
+    const safeClear = U_SHAPE_CONFIG.SAFE_CLEARANCE
     const boxesRight = Math.max(srcBox.x + srcBox.width, tgtBox.x + tgtBox.width)
     const minRight = Math.max(sourcePos.x, forcedPos.x) + FIXED_LEAD_LENGTH
     const midX = Math.max(boxesRight + safeClear, minRight)
@@ -876,12 +939,12 @@ function buildHorizontalU(params: {
     if (startSide !== 'left' || targetSidePortId !== '__side-left') { return null }
     // Use distance to the target's left-side port (forcedPos) instead of the node's left edge.
     // Also ensure the target is actually to the left (dx > 0) to avoid false triggers.
-    const dxLeft = sourcePos.x - forcedPos.x
-    const isCloseHorizontally = dxLeft > 0 && dxLeft < FIXED_LEAD_LENGTH
+    const dxLeft = sourcePos.x - targetNode.x
+    const isCloseHorizontally = dxLeft > 0 && dxLeft < U_SHAPE_CONFIG.PROXIMITY_THRESHOLD
     if (!isCloseHorizontally) { return null }
     const srcBox = cachedBuildNodeBoxModeAware(sourceNode)
     const tgtBox = cachedBuildNodeBoxModeAware(targetNode)
-    const safeClear = 16
+    const safeClear = U_SHAPE_CONFIG.SAFE_CLEARANCE
     const boxesLeft = Math.min(srcBox.x, tgtBox.x)
     const minLeft = Math.min(sourcePos.x, forcedPos.x) - FIXED_LEAD_LENGTH
     const midX = Math.min(boxesLeft - safeClear, minLeft)
@@ -984,14 +1047,14 @@ function generateArchitecturePathCore(
   })()
   const endOrientation = sideToOrientation(detectPortSideModeAware(targetNode, targetSidePortId, preciseEnd, 'architecture'))
 
-  const HALF_MARKER = 5
+  const HALF_MARKER = U_SHAPE_CONFIG.MARKER_TRIM
   const trimmedEnd = trimPointBySide(preciseEnd, targetSidePortId, sourcePos, HALF_MARKER)
 
   // Bottom U-shape special-case
   if (isSourceBottom && targetSidePortId === '__side-bottom') {
     const srcBox = cachedBuildNodeBoxModeAware(sourceNode)
     const tgtBox = cachedBuildNodeBoxModeAware(targetNode)
-    const safeClear = 16
+    const safeClear = U_SHAPE_CONFIG.SAFE_CLEARANCE
     const boxesBottom = Math.max(srcBox.y + srcBox.height, tgtBox.y + tgtBox.height)
     const minBelow = Math.max(sourcePos.y, preciseEnd.y) + FIXED_LEAD_LENGTH
     const midY = Math.max(boxesBottom + safeClear, minBelow)

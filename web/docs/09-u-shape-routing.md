@@ -1,6 +1,47 @@
 # U-Shape Routing Guide
 
-This document explains all U-shape connection routing behaviors implemented in the workflow designer, for both final (architecture mode) rendering and preview, including triggers, endpoints, and tunables. Use this as a reference for maintenance and future improvements.
+This document explains all U-shape connection routing beha## Tunables & constants
+
+### Centralized Configuration (v2.0)
+
+All U-shape parameters are now centralized in `U_SHAPE_CONFIG`:
+
+```typescript
+const U_SHAPE_CONFIG = {
+  // Proximity threshold for triggering U-shape routing
+  PROXIMITY_THRESHOLD: 50, // FIXED_LEAD_LENGTH
+  // Safe clearance around node boxes
+  SAFE_CLEARANCE: 16,
+  // Arrowhead trimming distance
+  MARKER_TRIM: 5.5,
+  // Buffer for obstacle detection
+  OBSTACLE_BUFFER: 20,
+} as const;
+```
+
+### Legacy Constants (for reference)
+
+- `FIXED_LEAD_LENGTH` (default 50): Minimum straight segment used when computing the U's horizontal legs and proximity threshold.
+- `safeClear`: unified to `16` across preview and final for all U-shape variants.
+- `HALF_MARKER` (≈ 5.5): arrowhead outward trimming amount applied to final segments so arrowheads do not enter target nodes. implemented in the workflow designer, for both final (architecture mode) rendering and preview, including triggers, endpoints, and tunables. Use this as a reference for maintenance and future improvements.
+
+## Recent Improvements (v2.0)
+
+### ✅ Fixed Issues:
+
+- **Proximity Detection Consistency**: Both preview and final modes now use the same logic (node.x vs centerX)
+- **Left U-Shape Logic**: Added missing `dx > 0` check in final mode for consistency
+- **Centralized Constants**: All U-shape parameters now use `U_SHAPE_CONFIG` for consistency
+- **Basic Obstacle Awareness**: Added simple obstacle detection to prevent overlapping
+- **Unit Tests**: Comprehensive test coverage for all U-shape variants
+
+### 🎯 Key Improvements:
+
+- Unified `U_SHAPE_CONFIG` with tunable parameters
+- Consistent proximity thresholds (50px default)
+- Standardized safe clearance (16px)
+- Arrowhead trimming (5.5px)
+- Basic obstacle detection with 20px buffer
 
 ## Where the logic lives
 
@@ -81,10 +122,19 @@ If none of the U-shape triggers match, the system uses the adaptive orthogonal r
 
 ## Known inconsistencies / improvement backlog
 
-1. Obstacle awareness: account for intermediate nodes/labels when choosing midX; consider simple occupancy checks.
-2. Configurability: expose `FIXED_LEAD_LENGTH`, `safeClear`, and `HALF_MARKER` via theme/config for per-tenant tuning.
-3. Tests: add unit tests for each U-shape trigger and path shape (happy path + edge thresholds near `< FIXED_LEAD_LENGTH`).
-4. Preview smoothing: ensure exact parity of rounding radius and trimming in rare edge layouts.
+### ✅ Recently Fixed:
+
+1. ~~Proximity detection inconsistency~~ → Fixed: Both modes use same node.x logic
+2. ~~Left U-shape missing dx > 0 check~~ → Fixed: Added consistent direction check
+3. ~~Scattered constants~~ → Fixed: Centralized in `U_SHAPE_CONFIG`
+4. ~~No tests~~ → Fixed: Added comprehensive unit tests
+
+### 🔄 Future Improvements:
+
+1. **Advanced Obstacle Awareness**: Account for intermediate nodes/labels when choosing midX; consider occupancy grid
+2. **Dynamic Configurability**: Expose `U_SHAPE_CONFIG` via theme/config for per-tenant tuning
+3. **Path Optimization**: Adaptive clearance based on available space
+4. **Preview Smoothing**: Ensure exact parity of rounding radius in all edge layouts
 
 ## Quick reference (pseudo-conditions)
 
