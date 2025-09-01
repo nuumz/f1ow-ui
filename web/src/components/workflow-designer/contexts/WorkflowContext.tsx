@@ -950,6 +950,18 @@ export function WorkflowProvider({ children, initialWorkflow }: WorkflowProvider
   const currentStateRef = useRef(state);
   currentStateRef.current = state;
 
+  // Cleanup effect for drag throttling
+  useEffect(() => {
+    return () => {
+      // Cleanup any pending RAF calls on unmount
+      if (dragThrottleRef.current) {
+        cancelAnimationFrame(dragThrottleRef.current);
+        dragThrottleRef.current = null;
+      }
+      lastDragPositionRef.current = null;
+    };
+  }, []);
+
   // Refs
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1104,11 +1116,37 @@ export function WorkflowProvider({ children, initialWorkflow }: WorkflowProvider
     [dispatch]
   );
 
+  // Throttled update drag position to prevent infinite loops
+  const lastDragPositionRef = useRef<{ x: number; y: number } | null>(null);
+  const dragThrottleRef = useRef<number | null>(null);
+
   const updateDragPosition = useCallback(
     (x: number, y: number) => {
-      dispatch({
-        type: 'UPDATE_DRAG_POSITION',
-        payload: { x, y },
+      // Early return if position hasn't changed meaningfully (1px tolerance)
+      if (lastDragPositionRef.current) {
+        const dx = Math.abs(x - lastDragPositionRef.current.x);
+        const dy = Math.abs(y - lastDragPositionRef.current.y);
+        if (dx < 1 && dy < 1) {
+          return; // Skip if position change is less than 1px
+        }
+      }
+
+      // Cancel previous throttled update
+      if (dragThrottleRef.current) {
+        cancelAnimationFrame(dragThrottleRef.current);
+      }
+
+      // Throttle updates using RAF to prevent excessive dispatches
+      dragThrottleRef.current = requestAnimationFrame(() => {
+        // Only dispatch if still dragging
+        if (currentStateRef.current.draggingState.isDragging) {
+          lastDragPositionRef.current = { x, y };
+          dispatch({
+            type: 'UPDATE_DRAG_POSITION',
+            payload: { x, y },
+          });
+        }
+        dragThrottleRef.current = null;
       });
     },
     [dispatch]
@@ -1116,6 +1154,15 @@ export function WorkflowProvider({ children, initialWorkflow }: WorkflowProvider
 
   const endDragging = useCallback(() => {
     const currentState = currentStateRef.current;
+
+    // Cancel any pending drag position updates
+    if (dragThrottleRef.current) {
+      cancelAnimationFrame(dragThrottleRef.current);
+      dragThrottleRef.current = null;
+    }
+
+    // Reset drag position tracking
+    lastDragPositionRef.current = null;
 
     // Prevent duplicate calls when already not dragging
     if (!currentState.draggingState.isDragging) {
@@ -1156,22 +1203,33 @@ export function WorkflowProvider({ children, initialWorkflow }: WorkflowProvider
     [dispatch]
   );
 
-  // Set up auto-save state callback
+  // Set up auto-save state callback with stable reference
+  // Use currentStateRef to guard dispatches without re-creating the callback
   useEffect(() => {
     const callback = (status: 'started' | 'completed' | 'failed', error?: string) => {
+      const s = currentStateRef.current;
       switch (status) {
-        case 'started':
-          dispatch({ type: 'AUTO_SAVE_STARTED' });
+        case 'started': {
+          // Dispatch only when transitioning into auto-saving state
+          if (!s.autoSaveState.isAutoSaving) {
+            dispatch({ type: 'AUTO_SAVE_STARTED' });
+          }
           break;
-        case 'completed':
-          dispatch({ type: 'AUTO_SAVE_COMPLETED' });
+        }
+        case 'completed': {
+          // Dispatch only when we were actually auto-saving
+          if (s.autoSaveState.isAutoSaving) {
+            dispatch({ type: 'AUTO_SAVE_COMPLETED' });
+          }
           break;
-        case 'failed':
+        }
+        case 'failed': {
           dispatch({
             type: 'AUTO_SAVE_FAILED',
             payload: { error: error || 'Unknown error' },
           });
           break;
+        }
       }
     };
 
@@ -1180,7 +1238,7 @@ export function WorkflowProvider({ children, initialWorkflow }: WorkflowProvider
     return () => {
       setAutoSaveCallback(() => {});
     };
-  }, [dispatch]);
+  }, []); // Intentional empty deps: dispatch is stable, state via currentStateRef
 
   // Auto-load connections when workflow name changes
   useEffect(() => {
@@ -1208,7 +1266,13 @@ export function WorkflowProvider({ children, initialWorkflow }: WorkflowProvider
     const signature = `${nodeSig}|${connSig}`;
     if (lastValidationSignature !== signature) {
       lastValidationSignature = signature;
-      validateConnections();
+
+      // Debounce validation to prevent rapid successive calls
+      const validationTimer = setTimeout(() => {
+        validateConnections();
+      }, 100); // Short debounce for validation
+
+      return () => clearTimeout(validationTimer);
     }
   }, [state.nodes, state.connections, validateConnections]);
 
@@ -1223,7 +1287,19 @@ export function WorkflowProvider({ children, initialWorkflow }: WorkflowProvider
 
       // Debounce auto-save to prevent excessive saves during rapid changes
       const autoSaveTimer = setTimeout(() => {
-        dispatch({ type: 'AUTO_SAVE_DRAFT' });
+        // Use direct auto-save to prevent dispatch loop
+        const draftId = `auto-save-${state.workflowName}`;
+        const draftData = {
+          id: draftId,
+          name: state.workflowName,
+          nodes: state.nodes,
+          connections: state.connections,
+          canvasTransform: state.canvasTransform,
+          designerMode: state.designerMode,
+          architectureMode: state.architectureMode,
+        };
+        autoSaveDraftWorkflow(draftData);
+        logger.info('Direct auto-save completed (no dispatch loop)');
       }, 1000); // 1 second debounce
 
       return () => clearTimeout(autoSaveTimer);
@@ -1234,7 +1310,10 @@ export function WorkflowProvider({ children, initialWorkflow }: WorkflowProvider
     state.connections,
     state.workflowName,
     state.connectionState.isConnecting,
-    dispatch,
+    state.designerMode,
+    state.architectureMode,
+    state.canvasTransform,
+    // Remove dispatch from dependencies to prevent infinite loop
   ]);
 
   // Auto-save after drag operations complete (optimized with debouncing)
