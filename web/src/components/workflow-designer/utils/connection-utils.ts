@@ -21,6 +21,18 @@ const ARCH_SIZE = 56
 // Architecture mode connection corner radius (keep all 90° bends consistent)
 const ARCH_CONNECTION_RADIUS = 12
 
+// Architecture mode: thresholds for forcing top-side termination when starting from a bottom port
+// If source is above target top by at least FORCE_TOP_MIN_DY and port-to-port distance exceeds FORCE_TOP_MIN_DIST,
+// pick the target's top side for clearer routing.
+const FORCE_TOP_MIN_DY = 75
+const FORCE_TOP_MIN_DIST = 100
+
+// Architecture mode: thresholds for forcing bottom-side termination when starting from a top port
+// If target's bottom is above the source top by at least FORCE_BOTTOM_MIN_DY and port-to-port distance exceeds FORCE_BOTTOM_MIN_DIST,
+// pick the target's bottom side for clearer routing.
+const FORCE_BOTTOM_MIN_DY = 75
+const FORCE_BOTTOM_MIN_DIST = 100
+
 // Mode-aware dimensions helper
 function getModeAwareDimensions(node: WorkflowNode, modeId?: string) {
   if (modeId === 'architecture') {
@@ -177,6 +189,8 @@ function sideToOrientation(side: EdgeSide): AxisOrientation {
   if (side === 'top' || side === 'bottom') { return 'vertical' }
   return 'horizontal'
 }
+
+
 
 // Choose best target side based on approach vector (leadPoint -> target center)
 function chooseAutoTargetSide(
@@ -561,6 +575,29 @@ export function calculateConnectionPreviewPath(
 
     // If hovering a node, delegate to the same generator used for final path so preview matches exactly
     if (opts?.hoveredNode && hoverTargetBox && chosenSide) {
+      // Conditional preference: when starting from a bottom port and far above the target top,
+      // force top termination for clearer routing regardless of target type.
+      let sideForPreview = chosenSide
+      if (isSourceBottomPort) {
+        const targetTop = getVirtualSidePortPositionForMode(opts.hoveredNode, '__side-top', 'architecture')
+        const dy = targetTop.y - sourcePos.y
+        const dx = targetTop.x - sourcePos.x
+        const dist = Math.hypot(dx, dy)
+        if (dy > FORCE_TOP_MIN_DY && dist > FORCE_TOP_MIN_DIST) {
+          sideForPreview = '__side-top'
+        }
+      }
+      // Symmetric rule: when starting from top side and target bottom is sufficiently above source top
+      // and far enough horizontally/overall, enforce bottom termination for clarity
+      if (startSide === 'top') {
+        const targetBottom = getVirtualSidePortPositionForMode(opts.hoveredNode, '__side-bottom', 'architecture')
+        const dyBottom = sourcePos.y - targetBottom.y
+        const dxBottom = targetBottom.x - sourcePos.x
+        const distBottom = Math.hypot(dxBottom, dyBottom)
+        if (dyBottom > FORCE_BOTTOM_MIN_DY && distBottom > FORCE_BOTTOM_MIN_DIST) {
+          sideForPreview = '__side-bottom'
+        }
+      }
       return generateArchitectureModeConnectionPathWithTargetSide(
         sourceNode,
         opts.hoveredNode,
@@ -568,10 +605,10 @@ export function calculateConnectionPreviewPath(
           sourceNodeId: sourceNode.id,
           sourcePortId,
           targetNodeId: opts.hoveredNode.id,
-          // Use the chosen side as the target port id during preview
-          targetPortId: chosenSide,
+          // Use the decided side as the target port id during preview
+          targetPortId: sideForPreview,
         },
-        chosenSide
+        sideForPreview
       )
     }
 
@@ -880,6 +917,29 @@ function generateArchitectureModeConnectionPath(
   const startOrientation = sideToOrientation(startSide)
 
   const chooseTargetSide = (): SidePortId => {
+    // Conditional top preference for any target:
+    // If source is bottom port and is higher than target top by >75px and
+    // the port-to-port distance is >100px, use top side.
+    if (isSourceBottom) {
+      const targetTop = getVirtualSidePortPositionForMode(targetNode, '__side-top', 'architecture')
+      const dy = targetTop.y - sourcePos.y
+      const dx = targetTop.x - sourcePos.x
+      const dist = Math.hypot(dx, dy)
+      if (dy > FORCE_TOP_MIN_DY && dist > FORCE_TOP_MIN_DIST) {
+        return '__side-top'
+      }
+    }
+    // Symmetric conditional bottom preference when starting from the top side:
+    // If the target's bottom is above the source top by >75px and distance >100px, use bottom side.
+    if (startSide === 'top') {
+      const targetBottom = getVirtualSidePortPositionForMode(targetNode, '__side-bottom', 'architecture')
+      const dyBottom = sourcePos.y - targetBottom.y
+      const dxBottom = targetBottom.x - sourcePos.x
+      const distBottom = Math.hypot(dxBottom, dyBottom)
+      if (dyBottom > FORCE_BOTTOM_MIN_DY && distBottom > FORCE_BOTTOM_MIN_DIST) {
+        return '__side-bottom'
+      }
+    }
     if (isSourceBottom) {
       const SNAP_THRESHOLD = FIXED_LEAD_LENGTH * 2
       const tBox = cachedBuildNodeBoxModeAware(targetNode)
@@ -1009,10 +1069,32 @@ export function generateArchitectureModeConnectionPathWithTargetSide(
   const startSide = detectPortSideModeAware(sourceNode, connection.sourcePortId, sourcePos, 'architecture')
   const startOrientation = sideToOrientation(startSide)
 
+  // Enforce conditional top preference for all targets (see rule in base generator)
+  let effectiveTargetSidePortId = targetSidePortId;
+  if (isSourceBottom) {
+    const targetTop = getVirtualSidePortPositionForMode(targetNode, '__side-top', 'architecture')
+    const dy = targetTop.y - sourcePos.y
+    const dx = targetTop.x - sourcePos.x
+    const dist = Math.hypot(dx, dy)
+    if (dy > FORCE_TOP_MIN_DY && dist > FORCE_TOP_MIN_DIST) {
+      effectiveTargetSidePortId = '__side-top'
+    }
+  }
+  // Symmetric: if starting from the top side and conditions meet, enforce bottom side
+  if (startSide === 'top') {
+    const targetBottom = getVirtualSidePortPositionForMode(targetNode, '__side-bottom', 'architecture')
+    const dyBottom = sourcePos.y - targetBottom.y
+    const dxBottom = targetBottom.x - sourcePos.x
+    const distBottom = Math.hypot(dxBottom, dyBottom)
+    if (dyBottom > FORCE_BOTTOM_MIN_DY && distBottom > FORCE_BOTTOM_MIN_DIST) {
+      effectiveTargetSidePortId = '__side-bottom'
+    }
+  }
+
   // Align end point to the exact target port position, using the overridden side anchor
-  const sideAnchor = getVirtualSidePortPositionForMode(targetNode, targetSidePortId, 'architecture')
+  const sideAnchor = getVirtualSidePortPositionForMode(targetNode, effectiveTargetSidePortId, 'architecture')
   const preciseEnd: { x: number; y: number } = ((): { x: number; y: number } => {
-    switch (targetSidePortId) {
+    switch (effectiveTargetSidePortId) {
       case '__side-left':
       case '__side-right':
         // Align to the side-port center to match the visible side handle
@@ -1026,13 +1108,13 @@ export function generateArchitectureModeConnectionPathWithTargetSide(
       }
     }
   })()
-  const endOrientation = sideToOrientation(detectPortSideModeAware(targetNode, targetSidePortId, preciseEnd, 'architecture'))
+  const endOrientation = sideToOrientation(detectPortSideModeAware(targetNode, effectiveTargetSidePortId, preciseEnd, 'architecture'))
 
   const HALF_MARKER = 5
-  const trimmedEnd = trimPointBySide(preciseEnd, targetSidePortId, sourcePos, HALF_MARKER)
+  const trimmedEnd = trimPointBySide(preciseEnd, effectiveTargetSidePortId, sourcePos, HALF_MARKER)
 
   // Bottom U-shape special-case
-  if (isSourceBottom && targetSidePortId === '__side-bottom') {
+  if (isSourceBottom && effectiveTargetSidePortId === '__side-bottom') {
     const srcBox = cachedBuildNodeBoxModeAware(sourceNode)
     const tgtBox = cachedBuildNodeBoxModeAware(targetNode)
     const safeClear = 16
@@ -1053,7 +1135,7 @@ export function generateArchitectureModeConnectionPathWithTargetSide(
   const rightU = buildHorizontalU({
     direction: 'right',
     startSide,
-    targetSidePortId,
+    targetSidePortId: effectiveTargetSidePortId,
     sourcePos,
     sourceNode,
     targetNode,
@@ -1066,7 +1148,7 @@ export function generateArchitectureModeConnectionPathWithTargetSide(
   const leftU = buildHorizontalU({
     direction: 'left',
     startSide,
-    targetSidePortId,
+    targetSidePortId: effectiveTargetSidePortId,
     sourcePos,
     sourceNode,
     targetNode,
@@ -1221,6 +1303,26 @@ export function groupConnectionsBySideAndPort(
       // Target side follows the same chooseTargetSide logic as path generation
       const isSourceBottom = isBottomPort(sNode, c.sourcePortId) || c.sourcePortId === '__side-bottom'
       const chooseTargetSideForGroup = (): SidePortId => {
+        // Mirror conditional top preference for all targets in grouping
+        const isSourceBottomLocal = isBottomPort(sNode, c.sourcePortId) || c.sourcePortId === '__side-bottom'
+        if (isSourceBottomLocal) {
+          const sPos = getModeAwarePortPosition(sNode, c.sourcePortId, sType, 'architecture')
+          const targetTop = getVirtualSidePortPositionForMode(tNode, '__side-top', 'architecture')
+          const dy = targetTop.y - sPos.y
+          const dx = targetTop.x - sPos.x
+          const dist = Math.hypot(dx, dy)
+          if (dy > FORCE_TOP_MIN_DY && dist > FORCE_TOP_MIN_DIST) { return '__side-top' }
+        }
+        // Mirror symmetric bottom preference when the start side is top
+        const sPosForTop = getModeAwarePortPosition(sNode, c.sourcePortId, sType, 'architecture')
+        const startSideLocal = detectPortSideModeAware(sNode, c.sourcePortId, sPosForTop, 'architecture')
+        if (startSideLocal === 'top') {
+          const targetBottom = getVirtualSidePortPositionForMode(tNode, '__side-bottom', 'architecture')
+          const dyBottom = sPosForTop.y - targetBottom.y
+          const dxBottom = targetBottom.x - sPosForTop.x
+          const distBottom = Math.hypot(dxBottom, dyBottom)
+          if (dyBottom > FORCE_BOTTOM_MIN_DY && distBottom > FORCE_BOTTOM_MIN_DIST) { return '__side-bottom' }
+        }
         if (isSourceBottom) {
           const SNAP_THRESHOLD = FIXED_LEAD_LENGTH * 2
           const tBox = buildNodeBoxModeAware(tNode, 'architecture')
