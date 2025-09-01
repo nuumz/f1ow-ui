@@ -42,6 +42,7 @@ export function renderConnectionsLayer(opts: RenderConnectionsOptions) {
     // Per-render caches to avoid redundant work
     const groupInfoCache = new Map<string, { index: number; total: number; isMultiple: boolean }>()
     const pathCache = new Map<string, string>()
+    const polygonCache = new Map<string, string>()
     const getGI = (id: string) => {
         let gi = groupInfoCache.get(id)
         if (!gi) {
@@ -150,7 +151,14 @@ export function renderConnectionsLayer(opts: RenderConnectionsOptions) {
                 const strokeWidth = 2 + Math.min(Math.max(gi.total - 1, 0), 4) // 2..6
                 thickness = 6 + (strokeWidth - 2) * 2 // 6..14
             }
-            return createFilledPolygonFromPath(getPath(d), thickness)
+            const p = getPath(d)
+            const key = `${p}|${thickness}`
+            let poly = polygonCache.get(key)
+            if (!poly) {
+                poly = createFilledPolygonFromPath(p, thickness)
+                polygonCache.set(key, poly)
+            }
+            return poly
         })
         hitboxSel.style('display', (d: Connection) => {
             const gi = getGI(d.id)

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useEffect, useState } from 'react';
+import { useCallback, useMemo, useRef, useEffect } from 'react';
 import type { Connection, NodeVariant, WorkflowNode } from '../types';
 import { generateModeAwareConnectionPath, generateArchitectureModeConnectionPathWithTargetSide, getModeAwarePortAnchors } from '../utils/connection-utils';
 import { PERFORMANCE_CONSTANTS } from '../utils/canvas-constants';
@@ -65,8 +65,8 @@ export function useConnectionPaths(
     stickySideRef.current.clear();
   }, [modeId]);
 
-  // Current endpoint positions storage
-  const [endpointPositions, setEndpointPositions] = useState<Map<string, ConnectionEndpoints>>(new Map());
+  // Current endpoint positions storage (ref-based to avoid re-renders during drag)
+  const endpointPositionsRef = useRef<Map<string, ConnectionEndpoints>>(new Map());
 
   // Get connection ID for endpoint tracking
   const getConnectionId = (connection: Connection): string =>
@@ -75,50 +75,44 @@ export function useConnectionPaths(
   // Get current endpoint positions for a connection
   const getConnectionEndpoints = useCallback((connection: Connection): ConnectionEndpoints | null => {
     const connectionId = getConnectionId(connection);
-    return endpointPositions.get(connectionId) || null;
-  }, [endpointPositions]);
+    return endpointPositionsRef.current.get(connectionId) || null;
+  }, []);
 
   // Update endpoint positions with smooth interpolation
   const updateEndpointPositions = useCallback((connection: Connection, newEndpoints: ConnectionEndpoints) => {
     const connectionId = getConnectionId(connection);
+    const map = endpointPositionsRef.current;
+    const existing = map.get(connectionId);
 
-    setEndpointPositions((prev: Map<string, ConnectionEndpoints>) => {
-      const updated = new Map(prev);
-      const existing = updated.get(connectionId);
+    if (!existing) {
+      map.set(connectionId, {
+        source: { ...newEndpoints.source, lastUpdate: Date.now() },
+        target: { ...newEndpoints.target, lastUpdate: Date.now() }
+      });
+    } else {
+      // Smooth interpolation for existing endpoints without triggering React renders
+      const now = Date.now();
+      const timeDelta = Math.min(now - (existing.source.lastUpdate || 0), 16); // Max 16ms for 60fps
+      const lerpFactor = Math.min(timeDelta / 100, 1); // 100ms to full position
 
-      if (!existing) {
-        // First time - set directly
-        updated.set(connectionId, {
-          source: { ...newEndpoints.source, lastUpdate: Date.now() },
-          target: { ...newEndpoints.target, lastUpdate: Date.now() }
-        });
-      } else {
-        // Smooth interpolation for existing endpoints
-        const now = Date.now();
-        const timeDelta = Math.min(now - (existing.source.lastUpdate || 0), 16); // Max 16ms for 60fps
-        const lerpFactor = Math.min(timeDelta / 100, 1); // 100ms to full position
-
-        updated.set(connectionId, {
-          source: {
-            x: existing.source.x + (newEndpoints.source.x - existing.source.x) * lerpFactor,
-            y: existing.source.y + (newEndpoints.source.y - existing.source.y) * lerpFactor,
-            lastUpdate: now
-          },
-          target: {
-            x: existing.target.x + (newEndpoints.target.x - existing.target.x) * lerpFactor,
-            y: existing.target.y + (newEndpoints.target.y - existing.target.y) * lerpFactor,
-            lastUpdate: now
-          }
-        });
-      }
-
-      return updated;
-    });
+      map.set(connectionId, {
+        source: {
+          x: existing.source.x + (newEndpoints.source.x - existing.source.x) * lerpFactor,
+          y: existing.source.y + (newEndpoints.source.y - existing.source.y) * lerpFactor,
+          lastUpdate: now
+        },
+        target: {
+          x: existing.target.x + (newEndpoints.target.x - existing.target.x) * lerpFactor,
+          y: existing.target.y + (newEndpoints.target.y - existing.target.y) * lerpFactor,
+          lastUpdate: now
+        }
+      });
+    }
   }, []);
 
-  // Clear endpoint positions when mode changes
+  // Clear endpoint positions when mode changes (ref-based)
   useEffect(() => {
-    setEndpointPositions(new Map());
+    endpointPositionsRef.current.clear();
   }, [modeId]);
 
   const updateDragPosition = useCallback((nodeId: string, pos: DragPos) => {

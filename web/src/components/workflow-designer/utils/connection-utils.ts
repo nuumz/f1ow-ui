@@ -1404,16 +1404,33 @@ export function renderConnectionPreviewPath(
     dbg,
   } = params;
 
-  if (!(isConnecting && connectionStart)) {
+  // Upsert a single preview path element to avoid per-frame remove/append churn
+  const ensurePreviewPath = () => {
+    let sel = targetLayer.select<SVGPathElement>('path.connection-preview');
+    if (sel.empty()) {
+      sel = targetLayer
+        .append('path')
+        .attr('class', 'connection-preview')
+        .attr('stroke', '#2196F3')
+        .attr('stroke-width', 2)
+        .attr('stroke-dasharray', '5,5')
+        .attr('stroke-linecap', 'round')
+        .attr('fill', 'none')
+        .attr('pointer-events', 'none')
+        .style('opacity', 0.7);
+    }
+    return sel;
+  };
+
+  // If not connecting or missing preview, remove existing and exit
+  if (!(isConnecting && connectionStart && connectionPreview)) {
+    targetLayer.selectAll('.connection-preview').remove();
     return;
   }
 
   const sourceNode = nodeMap.get(connectionStart.nodeId);
-  if (!sourceNode || !connectionPreview) {
-    dbg.warn('🔄 Effect not rendering preview:', {
-      sourceNode: !!sourceNode,
-      connectionPreview: !!connectionPreview,
-    });
+  if (!sourceNode) {
+    dbg.warn('🔄 Effect not rendering preview: missing sourceNode');
     return;
   }
 
@@ -1445,18 +1462,10 @@ export function renderConnectionPreviewPath(
 
   const isWorkflowMode = modeId === 'workflow';
   const previewMarker = getArrowMarkerForMode(isWorkflowMode, 'default');
-  targetLayer
-    .append('path')
-    .attr('class', 'connection-preview')
+  const pathSel = ensurePreviewPath();
+  pathSel
     .attr('d', previewPath)
-    .attr('stroke', '#2196F3')
-    .attr('stroke-width', 2)
-    .attr('stroke-dasharray', '5,5')
-    .attr('stroke-linecap', 'round')
-    .attr('fill', 'none')
-    .attr('marker-end', previewMarker)
-    .attr('pointer-events', 'none')
-    .style('opacity', 0.7);
+    .attr('marker-end', previewMarker);
 }
 
 /**
