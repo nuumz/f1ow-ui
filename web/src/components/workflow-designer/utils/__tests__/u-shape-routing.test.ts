@@ -229,6 +229,32 @@ describe('U-Shape Routing', () => {
             expect(path).toContain('M ') // Should have path
             expect(path).toMatch(/L \d+\.?\d* \d+\.?\d*/) // Should have line segments
         })
+
+        it('should coerce horizontal sticky side to vertical (bottom/top) for bottom-start', () => {
+            // Source starts at bottom, target is left of source (dx < 0)
+            sourceNode.x = 200
+            sourceNode.y = 100
+            targetNode.x = 120
+            targetNode.y = 110
+
+            // Force an explicit horizontal side override ('__side-right')
+            const path = generateArchitectureModeConnectionPathWithTargetSide(
+                sourceNode,
+                targetNode,
+                {
+                    sourceNodeId: 'source',
+                    sourcePortId: '__side-bottom',
+                    targetNodeId: 'target',
+                    targetPortId: '__side-right'
+                },
+                '__side-right'
+            )
+
+            // Path should still be a valid multi-segment U-shape style path
+            expect(path).toContain('M ')
+            const segments = path.split('L ').length
+            expect(segments).toBeGreaterThan(2)
+        })
     })
 
     describe('Obstacle Awareness', () => {

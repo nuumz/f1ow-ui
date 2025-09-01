@@ -967,8 +967,7 @@ function buildHorizontalU(params: {
     return buildRoundedPathFromPoints(points, ARCH_CONNECTION_RADIUS)
   } else {
     if (startSide !== 'left' || targetSidePortId !== '__side-left') { return null }
-    // Use distance to the target's left-side port (forcedPos) instead of the node's left edge.
-    // Also ensure the target is actually to the left (dx > 0) to avoid false triggers.
+    // Use distance to the target's center/port instead of box edge and ensure target is left
     const dxLeft = sourcePos.x - targetNode.x
     const isCloseHorizontally = dxLeft > 0 && dxLeft < U_SHAPE_CONFIG.PROXIMITY_THRESHOLD
     if (!isCloseHorizontally) { return null }
@@ -1028,6 +1027,14 @@ function generateArchitecturePathCore(
       const dx = targetTop.x - sourcePos.x
       const dist = Math.hypot(dx, dy)
       if (dy > FORCE_TOP_MIN_DY && dist > FORCE_TOP_MIN_DIST) { return '__side-top' }
+      // NEW: If a horizontal side (left/right) was explicitly requested while starting from bottom,
+      // coerce it to a vertical side (bottom/top) using the same proximity heuristic as the
+      // bottom-start branch below. This preserves U-shape intent near targets even with sticky-side overrides.
+      if (initialSide === '__side-left' || initialSide === '__side-right') {
+        const tBox = cachedBuildNodeBoxModeAware(targetNode)
+        const useBottom = (tBox.y - sourcePos.y) < FIXED_LEAD_LENGTH * 3 // 150px
+        return useBottom ? '__side-bottom' : '__side-top'
+      }
     }
     // Bottom enforcement for top-start
     if (startSide === 'top') {
