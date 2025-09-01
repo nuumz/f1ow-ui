@@ -892,12 +892,13 @@ function buildHorizontalU(params: {
 }
 
 // Extracted to reduce cognitive complexity of generateModeAwareConnectionPath
-function generateArchitectureModeConnectionPath(
+// Core generator shared by architecture-mode path functions
+function generateArchitecturePathCore(
   sourceNode: WorkflowNode,
   targetNode: WorkflowNode,
-  connection: { sourceNodeId: string; sourcePortId: string; targetNodeId: string; targetPortId: string }
+  connection: { sourceNodeId: string; sourcePortId: string; targetNodeId: string; targetPortId: string },
+  explicitTargetSide?: SidePortId
 ): string {
-  // Lightweight caches (shared)
   const { cachedBuildNodeBoxModeAware, cachedSidePort } = createArchitectureCaches()
 
   const isSourceBottom = isBottomPort(sourceNode, connection.sourcePortId) || connection.sourcePortId === '__side-bottom'
@@ -907,8 +908,6 @@ function generateArchitectureModeConnectionPath(
   const sourceDims = getModeAwareDimensions(sourceNode, 'architecture')
   const targetDims = getModeAwareDimensions(targetNode, 'architecture')
 
-  // use shared computeArchPortPos
-
   const sourcePos = computeArchPortPos(sourceNode, connection.sourcePortId, sourceType, sourceDims)
   const targetPos = computeArchPortPos(targetNode, connection.targetPortId, targetType, targetDims)
   if (!validatePathInputs(sourcePos, targetPos)) { return '' }
@@ -916,36 +915,42 @@ function generateArchitectureModeConnectionPath(
   const startSide = detectPortSideModeAware(sourceNode, connection.sourcePortId, sourcePos, 'architecture')
   const startOrientation = sideToOrientation(startSide)
 
-  const chooseTargetSide = (): SidePortId => {
-    // Conditional top preference for any target:
-    // If source is bottom port and is higher than target top by >75px and
-    // the port-to-port distance is >100px, use top side.
+  const applyEnforcement = (initialSide?: SidePortId): SidePortId | undefined => {
+    // Top enforcement for bottom-start
     if (isSourceBottom) {
       const targetTop = getVirtualSidePortPositionForMode(targetNode, '__side-top', 'architecture')
       const dy = targetTop.y - sourcePos.y
       const dx = targetTop.x - sourcePos.x
       const dist = Math.hypot(dx, dy)
-      if (dy > FORCE_TOP_MIN_DY && dist > FORCE_TOP_MIN_DIST) {
-        return '__side-top'
-      }
+      if (dy > FORCE_TOP_MIN_DY && dist > FORCE_TOP_MIN_DIST) { return '__side-top' }
     }
-    // Symmetric conditional bottom preference when starting from the top side:
-    // If the target's bottom is above the source top by >75px and distance >100px, use bottom side.
+    // Bottom enforcement for top-start
     if (startSide === 'top') {
       const targetBottom = getVirtualSidePortPositionForMode(targetNode, '__side-bottom', 'architecture')
       const dyBottom = sourcePos.y - targetBottom.y
       const dxBottom = targetBottom.x - sourcePos.x
       const distBottom = Math.hypot(dxBottom, dyBottom)
-      if (dyBottom > FORCE_BOTTOM_MIN_DY && distBottom > FORCE_BOTTOM_MIN_DIST) {
-        return '__side-bottom'
-      }
+      if (dyBottom > FORCE_BOTTOM_MIN_DY && distBottom > FORCE_BOTTOM_MIN_DIST) { return '__side-bottom' }
     }
+    return initialSide
+  }
+
+  const chooseTargetSide = (): SidePortId => {
+    // If explicit side provided, honor it but allow enforcement overrides
+    if (explicitTargetSide) {
+      return applyEnforcement(explicitTargetSide) || explicitTargetSide
+    }
+    // Try enforcement rules first
+    const enforced = applyEnforcement()
+    if (enforced) { return enforced }
+    // Bottom-start snap heuristic
     if (isSourceBottom) {
       const SNAP_THRESHOLD = FIXED_LEAD_LENGTH * 2
       const tBox = cachedBuildNodeBoxModeAware(targetNode)
       const useBottom = (tBox.y - sourcePos.y) < SNAP_THRESHOLD
       return useBottom ? '__side-bottom' : '__side-top'
     }
+    // If target port is already a side port, use it; otherwise auto-pick
     if (isVirtualSidePortId(connection.targetPortId)) {
       const tp = connection.targetPortId
       return (tp === '__side-left' || tp === '__side-right' || tp === '__side-top' || tp === '__side-bottom')
@@ -956,23 +961,15 @@ function generateArchitectureModeConnectionPath(
   }
 
   const targetSidePortId = chooseTargetSide()
-  // Align end point to the exact target port position, not just the side midpoint
-  // Use the selected side's axis for X/Y while preserving the port's orthogonal coordinate
   const sideAnchor = getVirtualSidePortPositionForMode(targetNode, targetSidePortId, 'architecture')
   const preciseEnd: { x: number; y: number } = ((): { x: number; y: number } => {
     switch (targetSidePortId) {
       case '__side-left':
       case '__side-right':
-        // For architecture side ports, visually the endpoint should snap to the side-port center
-        // to align with the rendered square handle on the edge. Using targetPos.y here causes
-        // mismatches when the logical input port sits off-center. Use sideAnchor.y instead.
         return { x: sideAnchor.x, y: sideAnchor.y }
       case '__side-top':
       case '__side-bottom':
       default: {
-        // For top/bottom termination:
-        // - If the actual target is a bottom port (or virtual bottom side), keep its exact X
-        // - Otherwise, use the side center X to keep arrowhead centered on the edge
         const isActualBottomTarget = isTargetBottom
         const endX = isActualBottomTarget ? targetPos.x : sideAnchor.x
         return { x: endX, y: sideAnchor.y }
@@ -981,9 +978,7 @@ function generateArchitectureModeConnectionPath(
   })()
   const endOrientation = sideToOrientation(detectPortSideModeAware(targetNode, targetSidePortId, preciseEnd, 'architecture'))
 
-  // Architecture markers use size=10; half is 5px for accurate trim
   const HALF_MARKER = 5
-  // Use shared direction-aware trimming to offset the end point by half the marker size
   const trimmedEnd = trimPointBySide(preciseEnd, targetSidePortId, sourcePos, HALF_MARKER)
 
   // Bottom U-shape special-case
@@ -994,7 +989,6 @@ function generateArchitectureModeConnectionPath(
     const boxesBottom = Math.max(srcBox.y + srcBox.height, tgtBox.y + tgtBox.height)
     const minBelow = Math.max(sourcePos.y, preciseEnd.y) + FIXED_LEAD_LENGTH
     const midY = Math.max(boxesBottom + safeClear, minBelow)
-    // Build rounded U path via explicit waypoints
     const bottomUTrimmedEnd = trimPointBySide(preciseEnd, '__side-bottom', sourcePos, HALF_MARKER)
     const points = [
       { x: sourcePos.x, y: sourcePos.y },
@@ -1040,6 +1034,15 @@ function generateArchitectureModeConnectionPath(
   })
 }
 
+// Thin wrapper preserving public API
+function generateArchitectureModeConnectionPath(
+  sourceNode: WorkflowNode,
+  targetNode: WorkflowNode,
+  connection: { sourceNodeId: string; sourcePortId: string; targetNodeId: string; targetPortId: string }
+): string {
+  return generateArchitecturePathCore(sourceNode, targetNode, connection)
+}
+
 /**
  * Architecture path generator with explicit target side override.
  * This is used by hooks to implement "sticky side" with hysteresis to avoid one-frame jumps.
@@ -1050,120 +1053,7 @@ export function generateArchitectureModeConnectionPathWithTargetSide(
   connection: { sourceNodeId: string; sourcePortId: string; targetNodeId: string; targetPortId: string },
   targetSidePortId: SidePortId
 ): string {
-  // Lightweight caches (shared)
-  const { cachedBuildNodeBoxModeAware, cachedSidePort } = createArchitectureCaches()
-
-  const isSourceBottom = isBottomPort(sourceNode, connection.sourcePortId) || connection.sourcePortId === '__side-bottom'
-  const isTargetBottom = isBottomPort(targetNode, connection.targetPortId) || connection.targetPortId === '__side-bottom'
-  const sourceType = isSourceBottom ? 'bottom' : 'output'
-  const targetType = isTargetBottom ? 'bottom' : 'input'
-  const sourceDims = getModeAwareDimensions(sourceNode, 'architecture')
-  const targetDims = getModeAwareDimensions(targetNode, 'architecture')
-
-  // use shared computeArchPortPos
-
-  const sourcePos = computeArchPortPos(sourceNode, connection.sourcePortId, sourceType, sourceDims)
-  const targetPos = computeArchPortPos(targetNode, connection.targetPortId, targetType, targetDims)
-  if (!validatePathInputs(sourcePos, targetPos)) { return '' }
-
-  const startSide = detectPortSideModeAware(sourceNode, connection.sourcePortId, sourcePos, 'architecture')
-  const startOrientation = sideToOrientation(startSide)
-
-  // Enforce conditional top preference for all targets (see rule in base generator)
-  let effectiveTargetSidePortId = targetSidePortId;
-  if (isSourceBottom) {
-    const targetTop = getVirtualSidePortPositionForMode(targetNode, '__side-top', 'architecture')
-    const dy = targetTop.y - sourcePos.y
-    const dx = targetTop.x - sourcePos.x
-    const dist = Math.hypot(dx, dy)
-    if (dy > FORCE_TOP_MIN_DY && dist > FORCE_TOP_MIN_DIST) {
-      effectiveTargetSidePortId = '__side-top'
-    }
-  }
-  // Symmetric: if starting from the top side and conditions meet, enforce bottom side
-  if (startSide === 'top') {
-    const targetBottom = getVirtualSidePortPositionForMode(targetNode, '__side-bottom', 'architecture')
-    const dyBottom = sourcePos.y - targetBottom.y
-    const dxBottom = targetBottom.x - sourcePos.x
-    const distBottom = Math.hypot(dxBottom, dyBottom)
-    if (dyBottom > FORCE_BOTTOM_MIN_DY && distBottom > FORCE_BOTTOM_MIN_DIST) {
-      effectiveTargetSidePortId = '__side-bottom'
-    }
-  }
-
-  // Align end point to the exact target port position, using the overridden side anchor
-  const sideAnchor = getVirtualSidePortPositionForMode(targetNode, effectiveTargetSidePortId, 'architecture')
-  const preciseEnd: { x: number; y: number } = ((): { x: number; y: number } => {
-    switch (effectiveTargetSidePortId) {
-      case '__side-left':
-      case '__side-right':
-        // Align to the side-port center to match the visible side handle
-        return { x: sideAnchor.x, y: sideAnchor.y }
-      case '__side-top':
-      case '__side-bottom':
-      default: {
-        const isActualBottomTarget = isTargetBottom
-        const endX = isActualBottomTarget ? targetPos.x : sideAnchor.x
-        return { x: endX, y: sideAnchor.y }
-      }
-    }
-  })()
-  const endOrientation = sideToOrientation(detectPortSideModeAware(targetNode, effectiveTargetSidePortId, preciseEnd, 'architecture'))
-
-  const HALF_MARKER = 5
-  const trimmedEnd = trimPointBySide(preciseEnd, effectiveTargetSidePortId, sourcePos, HALF_MARKER)
-
-  // Bottom U-shape special-case
-  if (isSourceBottom && effectiveTargetSidePortId === '__side-bottom') {
-    const srcBox = cachedBuildNodeBoxModeAware(sourceNode)
-    const tgtBox = cachedBuildNodeBoxModeAware(targetNode)
-    const safeClear = 16
-    const boxesBottom = Math.max(srcBox.y + srcBox.height, tgtBox.y + tgtBox.height)
-    const minBelow = Math.max(sourcePos.y, preciseEnd.y) + FIXED_LEAD_LENGTH
-    const midY = Math.max(boxesBottom + safeClear, minBelow)
-    const bottomUTrimmedEnd = trimPointBySide(preciseEnd, '__side-bottom', sourcePos, HALF_MARKER)
-    const points = [
-      { x: sourcePos.x, y: sourcePos.y },
-      { x: sourcePos.x, y: midY },
-      { x: bottomUTrimmedEnd.x, y: midY },
-      { x: bottomUTrimmedEnd.x, y: bottomUTrimmedEnd.y }
-    ]
-    return buildRoundedPathFromPoints(points, ARCH_CONNECTION_RADIUS)
-  }
-
-  // Horizontal U-shapes for close proximity (mirror logic from base function)
-  const rightU = buildHorizontalU({
-    direction: 'right',
-    startSide,
-    targetSidePortId: effectiveTargetSidePortId,
-    sourcePos,
-    sourceNode,
-    targetNode,
-    HALF_MARKER,
-    forcedPos: cachedSidePort(targetNode, '__side-right'),
-    trimSide: '__side-right',
-    cachedBuildNodeBoxModeAware
-  }); if (rightU) { return rightU }
-
-  const leftU = buildHorizontalU({
-    direction: 'left',
-    startSide,
-    targetSidePortId: effectiveTargetSidePortId,
-    sourcePos,
-    sourceNode,
-    targetNode,
-    HALF_MARKER,
-    forcedPos: cachedSidePort(targetNode, '__side-left'),
-    trimSide: '__side-left',
-    cachedBuildNodeBoxModeAware
-  }); if (leftU) { return leftU }
-
-  return generateAdaptiveOrthogonalRoundedPathSmart(sourcePos, trimmedEnd, ARCH_CONNECTION_RADIUS, {
-    clearance: 10,
-    targetBox: cachedBuildNodeBoxModeAware(targetNode),
-    startOrientationOverride: startOrientation,
-    endOrientationOverride: endOrientation
-  })
+  return generateArchitecturePathCore(sourceNode, targetNode, connection, targetSidePortId)
 }
 
 /**
