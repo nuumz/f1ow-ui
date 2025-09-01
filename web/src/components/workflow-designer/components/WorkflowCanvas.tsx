@@ -572,6 +572,8 @@ function WorkflowCanvas({
   const draggedNodeElementRef = useRef<SVGGElement | null>(null);
   const nodeLayerRef = useRef<SVGGElement | null>(null);
   const allNodeElementsRef = useRef<Map<string, SVGGElement>>(new Map());
+  // ESC vs drop race resolution flag
+  const cancelCurrentDragRef = useRef<boolean>(false);
 
   // Enhanced dragging state management for stability with context integration
   const dragStateCleanupRef = useRef<NodeJS.Timeout | null>(null);
@@ -1213,6 +1215,7 @@ function WorkflowCanvas({
         currentDragPositionsRef,
         connectionUpdateQueueRef,
         visualUpdateQueueRef,
+        cancelDragRef: cancelCurrentDragRef,
         startDragging,
         updateDragPosition,
         endDragging,
@@ -1858,26 +1861,147 @@ function WorkflowCanvas({
     }
   }, [isConnecting, isInitialized, svgRef, dbg]);
 
-  // Global ESC to cancel current connection gesture quickly
+  // Global ESC to cancel current connection gesture quickly AND cancel active node dragging (revert to start position)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        if (isConnectingRef.current || dragConnectionDataRef.current) {
-          // Clear preview and connection state via dispatch path
-          dragConnectionDataRef.current = null;
-          if (onPortDragEndProp) {
-            onPortDragEndProp(undefined, undefined, undefined, undefined);
-          } else {
-            dispatch?.({ type: 'CLEAR_CONNECTION_STATE' });
-          }
+      if (e.key !== 'Escape') {
+        return;
+      }
+
+      // 1) Cancel connection gesture if active
+      if (isConnectingRef.current || dragConnectionDataRef.current) {
+        dragConnectionDataRef.current = null;
+        if (onPortDragEndProp) {
+          onPortDragEndProp(undefined, undefined, undefined, undefined);
+        } else {
+          dispatch?.({ type: 'CLEAR_CONNECTION_STATE' });
+        }
+        e.stopPropagation();
+        e.preventDefault();
+        return;
+      }
+
+      // 2) Cancel node dragging if active: revert to initial position
+      try {
+        const currentlyDragging = isContextDragging();
+        if (!currentlyDragging) {
+          return;
+        }
+
+        const draggedId = getDraggedNodeId();
+        const startPos = dragStateFromContext.dragStartPosition;
+        if (!draggedId || !startPos) {
+          // Best-effort cleanup
+          endDragging();
           e.stopPropagation();
           e.preventDefault();
+          return;
         }
+
+        // Set cancellation flag so D3 dragEnded skips finalization
+        cancelCurrentDragRef.current = true;
+
+        // Immediate visual revert for the dragged node (avoid flicker)
+        const draggedEl = allNodeElementsRef.current.get(draggedId);
+        if (draggedEl) {
+          const sel = d3.select(draggedEl);
+          sel
+            .attr('transform', `translate(${startPos.x}, ${startPos.y})`)
+            .classed('dragging', false);
+          // Keep bound datum position in sync to avoid transient mismatch
+          const bound: any = sel.datum();
+          if (bound) {
+            bound.x = startPos.x;
+            bound.y = startPos.y;
+            // Mark datum-level ESC cancellation so any late drag events are ignored
+            (bound as any).__escCancelled = true;
+          }
+          // Reset visual style according to selection state
+          resetNodeVisualStyleCallback(sel as any, draggedId);
+        }
+        // Clear local ref to dragged element
+        if (draggedElementRef.current) {
+          draggedElementRef.current = null;
+        }
+
+        // Revert state position to the original start position
+        dispatch?.({
+          type: 'UPDATE_NODE_POSITION',
+          payload: { nodeId: draggedId, x: startPos.x, y: startPos.y },
+        });
+
+        // Update connection paths synchronously using committed positions
+        try {
+          const connectionLayer = getCachedSelection('connectionLayer');
+          if (connectionLayer) {
+            const affected = nodeConnectionsMap.get(draggedId) || [];
+            if (affected.length > 0) {
+              // Clear drag caches and force committed-position paths
+              clearConnCache();
+              affected.forEach((conn) => {
+                const group = connectionLayer.select(`[data-connection-id="${conn.id}"]`);
+                if (!group.empty()) {
+                  const pathEl = group.select('.connection-path');
+                  const newPath = getConnectionPath(conn, false);
+                  pathEl.attr('d', newPath);
+                }
+              });
+            }
+          }
+        } catch {
+          // ignore connection sync errors
+        }
+
+        // Clear drag tracking/caches and cancel any scheduled updates
+        try {
+          clearAllDragPositions();
+          clearAllDragTracking();
+          currentDragPositionsRef.current.clear();
+          connectionUpdateQueueRef.current.clear();
+          visualUpdateQueueRef.current.clear();
+          if (batchedConnectionUpdateRef.current) {
+            cancelAnimationFrame(batchedConnectionUpdateRef.current);
+            batchedConnectionUpdateRef.current = null;
+          }
+          if (batchedVisualUpdateRef.current) {
+            cancelAnimationFrame(batchedVisualUpdateRef.current);
+            batchedVisualUpdateRef.current = null;
+          }
+          nodePositionCacheRef.current.clear();
+          zIndexManager.clearState?.();
+          rafScheduler.clear?.();
+        } catch {
+          // ignore cleanup errors
+        }
+
+        // Finalize drag cancellation
+        // Keep cancellation flag true until D3 'dragEnded' fires (it will reset the flag there)
+        endDragging();
+        e.stopPropagation();
+        e.preventDefault();
+      } catch {
+        // Failsafe: ensure drag state ends
+        endDragging();
       }
     };
     window.addEventListener('keydown', onKeyDown, { capture: true });
     return () => window.removeEventListener('keydown', onKeyDown, { capture: true } as any);
-  }, [dispatch, onPortDragEndProp]);
+  }, [
+    dispatch,
+    onPortDragEndProp,
+    isContextDragging,
+    getDraggedNodeId,
+    dragStateFromContext.dragStartPosition,
+    clearAllDragPositions,
+    clearConnCache,
+    getConnectionPath,
+    nodeConnectionsMap,
+    endDragging,
+    getCachedSelection,
+    resetNodeVisualStyleCallback,
+    zIndexManager,
+    rafScheduler,
+  ]);
 
   // Canvas state effect removed for grid updates; the isolated grid effect above handles
   // all grid rendering to maximize cache hits and prevent redundant work.

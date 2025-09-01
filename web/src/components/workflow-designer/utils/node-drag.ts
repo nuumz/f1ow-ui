@@ -14,6 +14,8 @@ export type CreateNodeDragBehaviorParams = {
     currentDragPositionsRef: React.MutableRefObject<Map<string, { x: number; y: number }>>;
     connectionUpdateQueueRef: React.MutableRefObject<Set<string>>;
     visualUpdateQueueRef: React.MutableRefObject<Set<string>>;
+    // Cancellation flag to resolve ESC vs drop race
+    cancelDragRef?: React.MutableRefObject<boolean>;
     // Context callbacks
     startDragging: (id: string, pos: { x: number; y: number }) => void;
     updateDragPosition: (x: number, y: number) => void;
@@ -50,6 +52,7 @@ export function createNodeDragBehavior(params: CreateNodeDragBehaviorParams) {
         currentDragPositionsRef,
         connectionUpdateQueueRef,
         visualUpdateQueueRef,
+        cancelDragRef,
         startDragging,
         updateDragPosition,
         endDragging,
@@ -74,6 +77,12 @@ export function createNodeDragBehavior(params: CreateNodeDragBehaviorParams) {
     let lastContextDragUpdate = 0;
 
     function dragStarted(this: any, event: any, d: WorkflowNode) {
+        // Fresh drag should clear any previous cancellation
+        if (cancelDragRef) {
+            cancelDragRef.current = false;
+        }
+        // Clear datum-level cancel marker if exists
+        (d as any).__escCancelled = false;
         if (isConnectingRef.current || dragConnectionDataRef.current) {
             event?.sourceEvent?.stopPropagation?.();
             return;
@@ -138,6 +147,13 @@ export function createNodeDragBehavior(params: CreateNodeDragBehaviorParams) {
     }
 
     function dragged(this: any, event: any, d: WorkflowNode) {
+        // If ESC cancelled this drag, ignore subsequent pointer moves
+        if (cancelDragRef?.current || (d as any).__escCancelled) {
+            const src = event?.sourceEvent;
+            src?.stopPropagation?.();
+            src?.preventDefault?.();
+            return;
+        }
         const dragData = d as any;
         if (dragData.initialX === undefined || dragData.initialY === undefined) {
             return;
@@ -178,10 +194,11 @@ export function createNodeDragBehavior(params: CreateNodeDragBehaviorParams) {
     function dragEnded(this: any, event: any, d: WorkflowNode) {
         const dragData = d as any;
         const hasDragged = dragData.hasDragged;
+        const isCancelled = !!cancelDragRef?.current || !!(dragData.__escCancelled);
         const dragDuration = Date.now() - (dragData.dragStartTime || 0);
         const nodeElement = d3.select(this);
 
-        if (hasDragged && dragData.initialX !== undefined && dragData.initialY !== undefined) {
+        if (!isCancelled && hasDragged && dragData.initialX !== undefined && dragData.initialY !== undefined) {
             const svgElement = svgRef.current!;
             const sourceEvent = event.sourceEvent || event;
             const [mouseX, mouseY] = d3.pointer(sourceEvent, svgElement);
@@ -196,6 +213,17 @@ export function createNodeDragBehavior(params: CreateNodeDragBehaviorParams) {
 
             nodeElement.attr('transform', `translate(${d.x}, ${d.y})`);
             onNodeDrag(d.id, d.x, d.y);
+        }
+
+        // If cancelled, ensure we clear the cancellation flag after we processed end
+        if (isCancelled) {
+            // Do not trigger click-on-drag-end
+            if (cancelDragRef) {
+                cancelDragRef.current = false;
+            }
+            if (dragData.__escCancelled) {
+                delete dragData.__escCancelled;
+            }
         }
 
         delete dragData.dragStartX;
@@ -257,7 +285,7 @@ export function createNodeDragBehavior(params: CreateNodeDragBehaviorParams) {
             // ignore finalize errors in production
         }
 
-        if (!hasDragged && event.sourceEvent && dragDuration < 500) {
+        if (!isCancelled && !hasDragged && event.sourceEvent && dragDuration < 500) {
             const ctrlKey = event.sourceEvent.ctrlKey || event.sourceEvent.metaKey;
             onNodeClick(d, ctrlKey);
         }
