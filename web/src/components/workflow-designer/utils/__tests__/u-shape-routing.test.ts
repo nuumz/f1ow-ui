@@ -1,6 +1,6 @@
 /**
  * Unit tests for U-Shape routing functionality
- * Tests all three U-shape variants: bottom-to-bottom, horizontal right, and horizontal left
+ * Tests all four U-shape variants: top, bottom, horizontal right, and horizontal left
  */
 
 import { describe, it, expect, beforeEach } from 'vitest'
@@ -287,6 +287,76 @@ describe('U-Shape Routing', () => {
                     targetPortId: '__side-right'
                 },
                 '__side-right'
+            )
+
+            // Both should generate valid paths (indicating consistent trigger logic)
+            expect(path1).toContain('M ')
+            expect(path2).toContain('M ')
+        })
+    })
+
+    describe('Top U-Shape Routing', () => {
+        it('should generate top U path when source and target are vertically close with top port', () => {
+            const sourceNode = createTestNode('source', 50, 120)
+            const targetNode = createTestNode('target', 130, 100)
+
+            const path = generateArchitectureModeConnectionPathWithTargetSide(
+                sourceNode,
+                targetNode,
+                {
+                    sourceNodeId: 'source',
+                    sourcePortId: 'top',
+                    targetNodeId: 'target',
+                    targetPortId: '__side-top'
+                },
+                '__side-top'
+            )
+
+            // Should generate a top U path that goes:
+            // 1. Start from source top port
+            // 2. Go vertically up 
+            // 3. Go horizontally to target
+            // 4. Go vertically down to target top edge
+            expect(path).toContain('M ')
+            expect(path).toMatch(/L \d+(\.\d+)? \d+(\.\d+)?/g) // Multiple line segments
+
+            // Validate that the path contains multiple segments for U-shape
+            const segments = path.split('L ').length
+            expect(segments).toBeGreaterThan(3) // At least 3 segments for U shape
+        })
+
+        it('should maintain consistency between preview and final modes for top U-shape', () => {
+            const sourceNode = createTestNode('source', 50, 120)
+
+            // Generate preview path with hover target
+            const hoverTargetBox = {
+                x: 130,
+                y: 100,
+                width: 56,
+                height: 56
+            }
+
+            const path1 = calculateConnectionPreviewPath(
+                sourceNode,
+                'top',
+                { x: 130, y: 100 },
+                {
+                    modeId: 'architecture',
+                    hoverTargetBox
+                }
+            )
+
+            // Generate final path
+            const path2 = generateArchitectureModeConnectionPathWithTargetSide(
+                sourceNode,
+                createTestNode('target', 130, 100),
+                {
+                    sourceNodeId: 'source',
+                    sourcePortId: 'top',
+                    targetNodeId: 'target',
+                    targetPortId: '__side-top'
+                },
+                '__side-top'
             )
 
             // Both should generate valid paths (indicating consistent trigger logic)

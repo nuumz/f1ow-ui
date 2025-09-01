@@ -70,6 +70,18 @@ const U_SHAPE_CONFIG = {
   - Preview: `safeClear = 16` (unified)
 - Notes: Maintains minimum vertical lead segments; used historically to avoid bottom-overlap artifacts.
 
+### 1.5) Top U-shape — Start TOP ⇒ End TOP (v2.1)
+
+- Trigger (final): When source is top port and target top edge is at preview end Y:
+  - `sourcePortId === 'top' && previewEnd.y === hoverTargetBox.y`
+- Trigger (preview): When source top port connects to target top edge
+- Pathing strategy: Route around the outer top side using a midY above both nodes' topmost edges with `safeClear`.
+- Endpoint policy: Force terminate at target top port (final) / top-edge center (preview) for symmetric behavior with Bottom U-Shape.
+- Clearance:
+  - Final: `safeClear = 16`
+  - Preview: `safeClear = 16` (unified)
+- Notes: Symmetric implementation to Bottom U-Shape, maintains minimum vertical lead segments upward.
+
 ### 2) Horizontal U-shape — Start RIGHT ⇒ End RIGHT (same-side)
 
 - Trigger (final): Only when target is horizontally close:

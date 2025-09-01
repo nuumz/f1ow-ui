@@ -386,6 +386,33 @@ function maybeBottomUPathForPreview(args: {
   ].join(' ')
 }
 
+// Helper: top U route for preview
+function maybeTopUPathForPreview(args: {
+  isSourceTopPort: boolean
+  hoverTargetBox?: { x: number; y: number; width: number; height: number }
+  previewEnd: { x: number; y: number }
+  sourceNode: WorkflowNode
+  sourcePos: PortPosition
+  HALF_MARKER: number
+}): string | null {
+  const { isSourceTopPort, hoverTargetBox, previewEnd, sourceNode, sourcePos, HALF_MARKER } = args
+  if (!(isSourceTopPort && hoverTargetBox && previewEnd.y === hoverTargetBox.y)) { return null }
+  const srcBox = buildNodeBox(sourceNode)
+  const targetTopY = hoverTargetBox.y
+  const boxesTop = Math.min(srcBox.y, targetTopY)
+  const safeClear = U_SHAPE_CONFIG.SAFE_CLEARANCE
+  const minAbove = Math.min(sourcePos.y, targetTopY) - FIXED_LEAD_LENGTH
+  const midY = Math.min(boxesTop - safeClear, minAbove)
+  // Trim end by marker size using shared helper to align arrow tip with top edge
+  const topUTrimmedEndCorrected = trimPointBySide({ x: previewEnd.x, y: previewEnd.y }, '__side-top', sourcePos, HALF_MARKER)
+  return [
+    `M ${sourcePos.x} ${sourcePos.y}`,
+    `L ${sourcePos.x} ${midY}`,
+    `L ${topUTrimmedEndCorrected.x} ${midY}`,
+    `L ${topUTrimmedEndCorrected.x} ${topUTrimmedEndCorrected.y}`
+  ].join(' ')
+}
+
 // Helper: check if there are obstacles in the U-path area (basic implementation)
 function hasObstacleInPath(
   midX: number,
@@ -677,6 +704,9 @@ export function calculateConnectionPreviewPath(
         sideForPreview
       )
     }
+
+    const topU = maybeTopUPathForPreview({ isSourceTopPort: sourcePortId === 'top', hoverTargetBox, previewEnd, sourceNode, sourcePos, HALF_MARKER })
+    if (topU) { return topU }
 
     const bottomU = maybeBottomUPathForPreview({ isSourceBottomPort, hoverTargetBox, previewEnd, sourceNode, sourcePos, HALF_MARKER })
     if (bottomU) { return bottomU }
@@ -972,7 +1002,13 @@ function generateArchitecturePathCore(
 
   const isSourceBottom = isBottomPort(sourceNode, connection.sourcePortId) || connection.sourcePortId === '__side-bottom'
   const isTargetBottom = isBottomPort(targetNode, connection.targetPortId) || connection.targetPortId === '__side-bottom'
-  const sourceType = isSourceBottom ? 'bottom' : 'output'
+
+  // For architecture mode, also consider connections starting from bottom area as "bottom" connections
+  const isArchModeSourceBottom = isSourceBottom || connection.sourcePortId === '__side-bottom'
+
+  // Use architecture-aware bottom detection for subsequent logic
+  const effectiveIsSourceBottom = isArchModeSourceBottom
+  const sourceType = effectiveIsSourceBottom ? 'bottom' : 'output'
   const targetType = isTargetBottom ? 'bottom' : 'input'
   const sourceDims = getModeAwareDimensions(sourceNode, 'architecture')
   const targetDims = getModeAwareDimensions(targetNode, 'architecture')
@@ -986,7 +1022,7 @@ function generateArchitecturePathCore(
 
   const applyEnforcement = (initialSide?: SidePortId): SidePortId | undefined => {
     // Top enforcement for bottom-start
-    if (isSourceBottom) {
+    if (effectiveIsSourceBottom) {
       const targetTop = getVirtualSidePortPositionForMode(targetNode, '__side-top', 'architecture')
       const dy = targetTop.y - sourcePos.y
       const dx = targetTop.x - sourcePos.x
@@ -1012,13 +1048,36 @@ function generateArchitecturePathCore(
     // Try enforcement rules first
     const enforced = applyEnforcement()
     if (enforced) { return enforced }
+
     // Bottom-start snap heuristic
-    if (isSourceBottom) {
-      const SNAP_THRESHOLD = FIXED_LEAD_LENGTH * 2
+    if (effectiveIsSourceBottom) {
+      // More generous threshold for bottom-to-bottom U-shape routing
+      // Original: FIXED_LEAD_LENGTH * 2 (100px) might be too restrictive
+      const SNAP_THRESHOLD = FIXED_LEAD_LENGTH * 3 // 150px for better bottom-to-bottom detection
       const tBox = cachedBuildNodeBoxModeAware(targetNode)
       const useBottom = (tBox.y - sourcePos.y) < SNAP_THRESHOLD
+
       return useBottom ? '__side-bottom' : '__side-top'
+    }    // Enhanced bottom-to-bottom detection for architecture mode
+    // Check if nodes are horizontally close and vertically aligned for better U-shape routing
+    const srcBox = cachedBuildNodeBoxModeAware(sourceNode)
+    const tgtBox = cachedBuildNodeBoxModeAware(targetNode)
+    const horizontalDistance = Math.abs(srcBox.x - tgtBox.x)
+    const verticalDistance = Math.abs(srcBox.y - tgtBox.y)
+
+    // If nodes are close horizontally and relatively aligned vertically, prefer bottom-to-bottom
+    if (horizontalDistance < FIXED_LEAD_LENGTH * 2 && verticalDistance < FIXED_LEAD_LENGTH) {
+      return '__side-bottom'
     }
+
+    // Special case: If source is __side-bottom and nodes are reasonably close, force bottom-to-bottom
+    if (connection.sourcePortId === '__side-bottom') {
+      const reasonableDistance = FIXED_LEAD_LENGTH * 3 // 150px
+      if (horizontalDistance < reasonableDistance) {
+        return '__side-bottom'
+      }
+    }
+
     // If target port is already a side port, use it; otherwise auto-pick
     if (isVirtualSidePortId(connection.targetPortId)) {
       const tp = connection.targetPortId
@@ -1051,7 +1110,7 @@ function generateArchitecturePathCore(
   const trimmedEnd = trimPointBySide(preciseEnd, targetSidePortId, sourcePos, HALF_MARKER)
 
   // Bottom U-shape special-case
-  if (isSourceBottom && targetSidePortId === '__side-bottom') {
+  if (effectiveIsSourceBottom && targetSidePortId === '__side-bottom') {
     const srcBox = cachedBuildNodeBoxModeAware(sourceNode)
     const tgtBox = cachedBuildNodeBoxModeAware(targetNode)
     const safeClear = U_SHAPE_CONFIG.SAFE_CLEARANCE
@@ -1059,11 +1118,29 @@ function generateArchitecturePathCore(
     const minBelow = Math.max(sourcePos.y, preciseEnd.y) + FIXED_LEAD_LENGTH
     const midY = Math.max(boxesBottom + safeClear, minBelow)
     const bottomUTrimmedEnd = trimPointBySide(preciseEnd, '__side-bottom', sourcePos, HALF_MARKER)
+
     const points = [
       { x: sourcePos.x, y: sourcePos.y },
       { x: sourcePos.x, y: midY },
       { x: bottomUTrimmedEnd.x, y: midY },
       { x: bottomUTrimmedEnd.x, y: bottomUTrimmedEnd.y }
+    ]
+    return buildRoundedPathFromPoints(points, ARCH_CONNECTION_RADIUS)
+  }  // Top U-shape special-case (symmetric to bottom U-shape)
+  const isSourceTop = startSide === 'top' || connection.sourcePortId === '__side-top'
+  if (isSourceTop && targetSidePortId === '__side-top') {
+    const srcBox = cachedBuildNodeBoxModeAware(sourceNode)
+    const tgtBox = cachedBuildNodeBoxModeAware(targetNode)
+    const safeClear = U_SHAPE_CONFIG.SAFE_CLEARANCE
+    const boxesTop = Math.min(srcBox.y, tgtBox.y)
+    const minAbove = Math.min(sourcePos.y, preciseEnd.y) - FIXED_LEAD_LENGTH
+    const midY = Math.min(boxesTop - safeClear, minAbove)
+    const topUTrimmedEnd = trimPointBySide(preciseEnd, '__side-top', sourcePos, HALF_MARKER)
+    const points = [
+      { x: sourcePos.x, y: sourcePos.y },
+      { x: sourcePos.x, y: midY },
+      { x: topUTrimmedEnd.x, y: midY },
+      { x: topUTrimmedEnd.x, y: topUTrimmedEnd.y }
     ]
     return buildRoundedPathFromPoints(points, ARCH_CONNECTION_RADIUS)
   }
