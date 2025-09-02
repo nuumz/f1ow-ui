@@ -463,53 +463,36 @@ function maybeHorizontalUPathForPreview(args: {
   const srcBox = buildNodeBox(sourceNode)
   const centerY = hoverTargetBox.y + hoverTargetBox.height / 2
   const safeClear = U_SHAPE_CONFIG.SAFE_CLEARANCE
-  if (startSidePrev === 'right') {
-    // Allow right U-shape regardless of relative target X to keep behavior consistent
-    // Use target side right edge center for end snapping
-    // Always allow right U-shape when starting from right and snapping to right side
-    {
-      const rightEdgeCenter = { x: hoverTargetBox.x + hoverTargetBox.width, y: centerY }
-      const boxesRight = Math.max(srcBox.x + srcBox.width, hoverTargetBox.x + hoverTargetBox.width)
-      const minRight = Math.max(sourcePos.x, rightEdgeCenter.x) + FIXED_LEAD_LENGTH
-      const midX = Math.max(boxesRight + safeClear, minRight)
-
-      // Obstacle check: if blocked, fall back to normal routing
-      const hasObstacle = hasObstacleInPath(midX, sourcePos.y, rightEdgeCenter.y, availableNodes, [sourceNode.id])
-      if (hasObstacle) {
-        return null // Fall back to regular routing
-      }
-
-      return [
-        `M ${sourcePos.x} ${sourcePos.y}`,
-        `L ${midX} ${sourcePos.y}`,
-        `L ${midX} ${rightEdgeCenter.y}`,
-        `L ${rightEdgeCenter.x} ${rightEdgeCenter.y}`
-      ].join(' ')
-    }
+  // Use shared decision for parity
+  const tBox: ArchBox = { x: hoverTargetBox.x, y: hoverTargetBox.y, width: hoverTargetBox.width, height: hoverTargetBox.height }
+  const decision = decideHorizontalU(startSidePrev, sourcePos, tBox)
+  if (decision.allow && decision.direction === 'right') {
+    const rightEdgeCenter = { x: hoverTargetBox.x + hoverTargetBox.width, y: centerY }
+    const boxesRight = Math.max(srcBox.x + srcBox.width, hoverTargetBox.x + hoverTargetBox.width)
+    const minRight = Math.max(sourcePos.x, rightEdgeCenter.x) + FIXED_LEAD_LENGTH
+    const midX = Math.max(boxesRight + safeClear, minRight)
+    const hasObs = hasObstacleInPath(midX, sourcePos.y, rightEdgeCenter.y, availableNodes, [sourceNode.id])
+    if (hasObs) { return null }
+    return [
+      `M ${sourcePos.x} ${sourcePos.y}`,
+      `L ${midX} ${sourcePos.y}`,
+      `L ${midX} ${rightEdgeCenter.y}`,
+      `L ${rightEdgeCenter.x} ${rightEdgeCenter.y}`
+    ].join(' ')
   }
-  if (startSidePrev === 'left') {
-    // Allow left U-shape regardless of relative target X to keep behavior consistent
-    // Use target side left edge center for end snapping
-    // Always allow left U-shape when starting from left and snapping to left side
-    {
-      const leftEdgeCenter = { x: hoverTargetBox.x, y: centerY }
-      const boxesLeft = Math.min(srcBox.x, hoverTargetBox.x)
-      const minLeft = Math.min(sourcePos.x, leftEdgeCenter.x) - FIXED_LEAD_LENGTH
-      const midX = Math.min(boxesLeft - safeClear, minLeft)
-
-      // Obstacle check: if blocked, fall back to normal routing
-      const hasObstacle = hasObstacleInPath(midX, sourcePos.y, leftEdgeCenter.y, availableNodes, [sourceNode.id])
-      if (hasObstacle) {
-        return null // Fall back to regular routing
-      }
-
-      return [
-        `M ${sourcePos.x} ${sourcePos.y}`,
-        `L ${midX} ${sourcePos.y}`,
-        `L ${midX} ${leftEdgeCenter.y}`,
-        `L ${leftEdgeCenter.x} ${leftEdgeCenter.y}`
-      ].join(' ')
-    }
+  if (decision.allow && decision.direction === 'left') {
+    const leftEdgeCenter = { x: hoverTargetBox.x, y: centerY }
+    const boxesLeft = Math.min(srcBox.x, hoverTargetBox.x)
+    const minLeft = Math.min(sourcePos.x, leftEdgeCenter.x) - FIXED_LEAD_LENGTH
+    const midX = Math.min(boxesLeft - safeClear, minLeft)
+    const hasObs = hasObstacleInPath(midX, sourcePos.y, leftEdgeCenter.y, availableNodes, [sourceNode.id])
+    if (hasObs) { return null }
+    return [
+      `M ${sourcePos.x} ${sourcePos.y}`,
+      `L ${midX} ${sourcePos.y}`,
+      `L ${midX} ${leftEdgeCenter.y}`,
+      `L ${leftEdgeCenter.x} ${leftEdgeCenter.y}`
+    ].join(' ')
   }
   return null
 }
@@ -667,30 +650,27 @@ export function calculateConnectionPreviewPath(
 
     // If hovering a node, delegate to the same generator used for final path so preview matches exactly
     if (opts?.hoveredNode && hoverTargetBox && chosenSide) {
-      // Decide side with sensible priorities for side-starts:
-      // 1) If vertical dominates, choose top/bottom by dy sign to create vertical U.
-      // 2) Else, bias horizontal side only when dx sign matches.
+      // Use the same horizontal U-shape decision as final for strict parity
       let sideForPreview = chosenSide
       if (startSide === 'right' || startSide === 'left') {
-        const dxTarget = opts.hoveredNode.x - sourcePos.x
-        const dyTarget = opts.hoveredNode.y - sourcePos.y
-        if (Math.abs(dyTarget) >= Math.abs(dxTarget)) {
-          sideForPreview = dyTarget < 0 ? '__side-top' : '__side-bottom'
+        const tBox: ArchBox = { x: hoverTargetBox.x, y: hoverTargetBox.y, width: hoverTargetBox.width, height: hoverTargetBox.height }
+        const decision = decideHorizontalU(startSide, sourcePos, tBox)
+        if (decision.allow && decision.endSide) {
+          sideForPreview = decision.endSide
         } else {
-          sideForPreview = startSide === 'right' ? '__side-right' : '__side-left'
-        }
-      } else {
-        // Non-left/right starts: keep original bottom/top enforcement
-        if (isSourceBottomPort) {
-          const targetTop = getVirtualSidePortPositionForMode(opts.hoveredNode, '__side-top', 'architecture')
-          const dy = targetTop.y - sourcePos.y
-          const dx = targetTop.x - sourcePos.x
-          const dist = Math.hypot(dx, dy)
-          if (dy > FORCE_TOP_MIN_DY && dist > FORCE_TOP_MIN_DIST) { sideForPreview = '__side-top' }
+          // If horizontal U is not allowed, keep chosenSide (auto) to avoid mismatch
+          sideForPreview = chosenSide
         }
       }
+      // Non-left/right starts: keep original bottom/top enforcement (same as final)
+      if (isSourceBottomPort) {
+        const targetTop = getVirtualSidePortPositionForMode(opts.hoveredNode, '__side-top', 'architecture')
+        const dy = targetTop.y - sourcePos.y
+        const dx = targetTop.x - sourcePos.x
+        const dist = Math.hypot(dx, dy)
+        if (dy > FORCE_TOP_MIN_DY && dist > FORCE_TOP_MIN_DIST) { sideForPreview = '__side-top' }
+      }
       // Symmetric rule: when starting from top side and target bottom is sufficiently above source top
-      // and far enough horizontally/overall, enforce bottom termination for clarity
       if (startSide === 'top') {
         const targetBottom = getVirtualSidePortPositionForMode(opts.hoveredNode, '__side-bottom', 'architecture')
         const dyBottom = sourcePos.y - targetBottom.y
@@ -906,6 +886,30 @@ function createArchitectureCaches() {
   return { cachedBuildNodeBoxModeAware, cachedSidePort }
 }
 
+// Shared horizontal U-shape decision for Left/Right to keep parity with Top/Bottom rules
+type HorizontalUDecision = { allow: boolean; endSide?: '__side-left' | '__side-right'; direction?: 'left' | 'right' }
+function decideHorizontalU(startSide: PortSide, sourcePos: PortPosition, tBox: ArchBox): HorizontalUDecision {
+  if (startSide !== 'left' && startSide !== 'right') { return { allow: false } }
+  const centerY = tBox.y + tBox.height / 2
+  const tgtCenterX = tBox.x + tBox.width / 2
+  const dy = centerY - sourcePos.y
+  const TH = U_SHAPE_CONFIG.PROXIMITY_THRESHOLD
+  const EXT = TH * 3
+  if (startSide === 'right') {
+    const dxCenter = tgtCenterX - sourcePos.x
+    const dxRightEdge = (tBox.x + tBox.width) - sourcePos.x
+    const allowStandard = dxCenter > 0 && dxCenter < TH
+    const allowFallback = Math.abs(dxRightEdge) < EXT && Math.abs(dy) > U_SHAPE_CONFIG.SAFE_CLEARANCE
+    return { allow: allowStandard || allowFallback, endSide: '__side-right', direction: 'right' }
+  } else {
+    const dxCenter = sourcePos.x - tgtCenterX
+    const dxLeftEdge = sourcePos.x - tBox.x
+    const allowStandard = dxCenter > 0 && dxCenter < TH
+    const allowFallback = Math.abs(dxLeftEdge) < EXT && Math.abs(dy) > U_SHAPE_CONFIG.SAFE_CLEARANCE
+    return { allow: allowStandard || allowFallback, endSide: '__side-left', direction: 'left' }
+  }
+}
+
 function computeArchPortPos(
   node: WorkflowNode,
   portId: string,
@@ -1059,20 +1063,11 @@ function generateArchitecturePathCore(
       return applyEnforcement(explicitTargetSide) || explicitTargetSide
     }
 
-    // Priority 2 - Symmetric horizontal U-shape heuristic (mirror of bottom SNAP logic)
-    // If starting from right and target's left edge is within a horizontal SNAP threshold from the source,
-    // prefer right side; if starting from left and target's right edge is within threshold, prefer left side.
+    // Priority 2 - Symmetric horizontal U-shape heuristic; reuse shared decision logic for parity
     if (startSide === 'right' || startSide === 'left') {
-      const SNAP_H_THRESHOLD = FIXED_LEAD_LENGTH * 3 // generous like bottom-to-bottom
       const tBox = cachedBuildNodeBoxModeAware(targetNode)
-      if (startSide === 'right') {
-        const useRight = (tBox.x - sourcePos.x) < SNAP_H_THRESHOLD
-        if (useRight) { return '__side-right' }
-      } else {
-        const targetRight = tBox.x + tBox.width
-        const useLeft = (sourcePos.x - targetRight) < SNAP_H_THRESHOLD
-        if (useLeft) { return '__side-left' }
-      }
+      const decision = decideHorizontalU(startSide, sourcePos, tBox)
+      if (decision.allow && decision.endSide) { return decision.endSide }
     }
 
     // Priority 3 - Enforcement for top/bottom clarity when applicable
