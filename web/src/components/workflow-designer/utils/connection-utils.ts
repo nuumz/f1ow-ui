@@ -45,6 +45,12 @@ const FORCE_TOP_MIN_DIST = 100
 const FORCE_BOTTOM_MIN_DY = 75
 const FORCE_BOTTOM_MIN_DIST = 100
 
+// Architecture mode: thresholds for forcing right-side termination when starting from a right port
+// If target's right side is meaningfully to the right and overall distance exceeds FORCE_RIGHT_MIN_DIST,
+// pick the target's right side for clearer horizontal routing.
+const FORCE_RIGHT_MIN_DX = 75
+const FORCE_RIGHT_MIN_DIST = 100
+
 // Mode-aware dimensions helper
 function getModeAwareDimensions(node: WorkflowNode, modeId?: string) {
   if (modeId === 'architecture') {
@@ -310,6 +316,22 @@ function snapToHoverTargetBox(args: {
     return { previewEnd: { x: centerX, y: useBottom ? bottomY : topY }, chosenSide: useBottom ? '__side-bottom' : '__side-top', endOrientation: 'vertical' }
   }
   // For non-bottom starts (left, right, top), choose optimal side based on geometry
+  // Parity tweak: when starting from right, prefer snapping to right edge if vertical separation is significant
+  if (_startSide === 'right') {
+    const targetRight = { x: hoverTargetBox.x + hoverTargetBox.width, y: centerY }
+    const dxRight = targetRight.x - sourcePos.x
+    const dyRight = targetRight.y - sourcePos.y
+    const distRight = Math.hypot(dxRight, dyRight)
+    const hasVerticalSeparation = Math.abs(dyRight) > FORCE_BOTTOM_MIN_DY
+    const hasHorizontalSeparation = dxRight > FORCE_RIGHT_MIN_DX
+    // Only bias to right when auto-side prefers right at target center
+    const dxCenter = centerX - sourcePos.x
+    const dyCenter = centerY - sourcePos.y
+    const autoRight = Math.abs(dxCenter) >= Math.abs(dyCenter) ? (dxCenter <= 0) : false
+    if (autoRight && hasVerticalSeparation && hasHorizontalSeparation && distRight > FORCE_RIGHT_MIN_DIST) {
+      return { previewEnd: targetRight, chosenSide: '__side-right', endOrientation: 'horizontal' }
+    }
+  }
   const mockTarget: WorkflowNode = { id: 'mock-target', label: 'Mock Target', x: centerX, y: centerY, type: 'mock', inputs: [], outputs: [], config: {} }
   const optimalSide = chooseAutoTargetSide(sourcePos, mockTarget)
   let posBySide: { x: number; y: number }
@@ -327,16 +349,24 @@ function snapToAvailableNodes(args: {
   previewPosition: { x: number; y: number }
   sourceNode: WorkflowNode
   sourcePos: PortPosition
+  startSide: PortSide
 }): SnapResult | null {
-  const { availableNodes, previewPosition, sourceNode, sourcePos } = args
+  const { availableNodes, previewPosition, sourceNode, sourcePos, startSide } = args
   if (!availableNodes || availableNodes.length === 0) { return null }
   const snapTarget = findNearbySnapTargets(previewPosition, availableNodes, sourceNode, sourcePos, 50)
   if (!snapTarget) { return null }
-  return {
-    previewEnd: { x: snapTarget.x, y: snapTarget.y },
-    chosenSide: snapTarget.targetSide,
-    endOrientation: (snapTarget.targetSide === '__side-left' || snapTarget.targetSide === '__side-right') ? 'horizontal' : 'vertical'
+  // If starting from right and vertical separation is significant, bias to right side
+  if (startSide === 'right' && snapTarget.targetSide === '__side-right') {
+    const dxR = (snapTarget.x - sourcePos.x)
+    const dyR = (snapTarget.y - sourcePos.y)
+    const dist = Math.hypot(dxR, dyR)
+    const hasVerticalSeparation = Math.abs(dyR) > FORCE_BOTTOM_MIN_DY
+    const hasHorizontalSeparation = dxR > FORCE_RIGHT_MIN_DX
+    if (hasVerticalSeparation && hasHorizontalSeparation && dist > FORCE_RIGHT_MIN_DIST) {
+      return { previewEnd: { x: snapTarget.x, y: snapTarget.y }, chosenSide: '__side-right', endOrientation: 'horizontal' }
+    }
   }
+  return { previewEnd: { x: snapTarget.x, y: snapTarget.y }, chosenSide: snapTarget.targetSide, endOrientation: (snapTarget.targetSide === '__side-left' || snapTarget.targetSide === '__side-right') ? 'horizontal' : 'vertical' }
 }
 
 function computeArchitecturePreviewSnapEnd(params: {
@@ -353,7 +383,7 @@ function computeArchitecturePreviewSnapEnd(params: {
     ? snapToHoverTargetBox({ hoverTargetBox, startSide, isSourceBottomPort, sourcePos })
     : null
   if (hoverSnap) { return hoverSnap }
-  const nodeSnap = snapToAvailableNodes({ availableNodes, previewPosition, sourceNode, sourcePos })
+  const nodeSnap = snapToAvailableNodes({ availableNodes, previewPosition, sourceNode, sourcePos, startSide })
   if (nodeSnap) { return nodeSnap }
   const gridSize = 20
   return { previewEnd: { x: Math.round(previewPosition.x / gridSize) * gridSize, y: Math.round(previewPosition.y / gridSize) * gridSize } }
@@ -678,6 +708,23 @@ export function calculateConnectionPreviewPath(
         const distBottom = Math.hypot(dxBottom, dyBottom)
         if (dyBottom > FORCE_BOTTOM_MIN_DY && distBottom > FORCE_BOTTOM_MIN_DIST) {
           sideForPreview = '__side-bottom'
+        }
+      }
+      // Right-side enforcement for right-start (preview parity): require significant vertical separation + distance
+      if (startSide === 'right') {
+        const targetRight = getVirtualSidePortPositionForMode(opts.hoveredNode, '__side-right', 'architecture')
+        const dxRight = targetRight.x - sourcePos.x
+        const dyRight = targetRight.y - sourcePos.y
+        const distRight = Math.hypot(dxRight, dyRight)
+        const hasVerticalSeparation = Math.abs(dyRight) > FORCE_BOTTOM_MIN_DY
+        const hasHorizontalSeparation = dxRight > FORCE_RIGHT_MIN_DX
+        // Only enforce right when the auto side at target center is right
+        const center = { x: opts.hoveredNode.x, y: opts.hoveredNode.y }
+        const dxCenter = center.x - sourcePos.x
+        const dyCenter = center.y - sourcePos.y
+        const autoRight = Math.abs(dxCenter) >= Math.abs(dyCenter) ? (dxCenter <= 0) : false
+        if (autoRight && hasVerticalSeparation && hasHorizontalSeparation && distRight > FORCE_RIGHT_MIN_DIST) {
+          sideForPreview = '__side-right'
         }
       }
       return generateArchitectureModeConnectionPathWithTargetSide(
@@ -1046,6 +1093,23 @@ function generateArchitecturePathCore(
         return useBottom ? '__side-bottom' : '__side-top'
       }
     }
+    // Right-side enforcement for right-start (parity with bottom-side):
+    // favor right termination when vertical difference is significant and overall distance is sufficient
+    if (startSide === 'right') {
+      const targetRight = getVirtualSidePortPositionForMode(targetNode, '__side-right', 'architecture')
+      const dxRight = targetRight.x - sourcePos.x
+      const dyRight = targetRight.y - sourcePos.y
+      const distRight = Math.hypot(dxRight, dyRight)
+      const hasVerticalSeparation = Math.abs(dyRight) > FORCE_BOTTOM_MIN_DY
+      const hasHorizontalSeparation = dxRight > FORCE_RIGHT_MIN_DX
+      // Auto-side at target center must prefer right to avoid overriding left-entry layouts
+      const dxCenter = targetNode.x - sourcePos.x
+      const dyCenter = targetNode.y - sourcePos.y
+      const autoRight = Math.abs(dxCenter) >= Math.abs(dyCenter) ? (dxCenter <= 0) : false
+      if (autoRight && hasVerticalSeparation && hasHorizontalSeparation && distRight > FORCE_RIGHT_MIN_DIST) {
+        return '__side-right'
+      }
+    }
     // Bottom enforcement for top-start
     if (startSide === 'top') {
       const targetBottom = getVirtualSidePortPositionForMode(targetNode, '__side-bottom', 'architecture')
@@ -1070,7 +1134,7 @@ function generateArchitecturePathCore(
       if (decision.allow && decision.endSide) { return decision.endSide }
     }
 
-    // Priority 3 - Enforcement for top/bottom clarity when applicable
+    // Priority 3 - Enforcement for top/bottom/right clarity when applicable
     const enforced = applyEnforcement()
     if (enforced) { return enforced }
 
