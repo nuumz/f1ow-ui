@@ -372,6 +372,47 @@ $breakpoints: (
   }
 }
 
+// ===== Export Preview Modal tweaks (core modal classes) =====
+.export-preview-modal {
+  width: min(960px, 92vw);
+  max-height: 80vh;
+}
+
+.export-preview-modal .modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px;
+  border-bottom: 1px solid #f1f5f9;
+  background: linear-gradient(to bottom, #fff, #fff 60%, #fdfdfd);
+}
+.export-preview-modal .modal-body {
+  padding: 0;
+}
+.export-preview-modal .modal-footer {
+  padding: 12px 16px;
+  border-top: 1px solid #f1f5f9;
+  background: linear-gradient(to top, #fff 65%, #f8fafc);
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.export-preview-modal .json-preview {
+  margin: 0;
+  padding: 16px;
+  background: #0b1220;
+  color: #e5e7eb;
+  max-height: 60vh;
+  overflow: auto;
+  border-radius: 0 0 8px 8px;
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 // ===== ACTIONS AND BUTTONS =====
 
 .workflow-actions {
@@ -1561,20 +1602,21 @@ $button-variants: (
       border-radius: 4px;
       padding: 2px 6px;
       font-size: 12px;
-      
+
       &.good {
         background: #10b981;
         color: white;
       }
-      
+
       &.warning {
         background: #f59e0b;
         color: white;
         animation: pulse 2s infinite;
       }
-      
+
       @keyframes pulse {
-        0%, 100% {
+        0%,
+        100% {
           opacity: 1;
         }
         50% {

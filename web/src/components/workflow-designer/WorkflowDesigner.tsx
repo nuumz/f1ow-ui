@@ -49,6 +49,7 @@ import DraftManager from './components/DraftManager';
 import { AutoSaveStatus } from './components/AutoSaveStatus';
 import WorkflowNodePalette from './components/WorkflowNodePalette';
 import NodeEditor from '../NodeEditor';
+import ExportPreviewModal from './components/ExportPreviewModal';
 
 // Import Architecture Components
 import ArchitectureNodePalette from './components/ArchitectureNodePalette';
@@ -178,6 +179,26 @@ interface WorkflowData {
   readonly connections: Connection[];
 }
 
+// Export payload type (matches useWorkflowOperations export/save format)
+type ExportWorkflowPayload = {
+  readonly name: string;
+  readonly definition: {
+    readonly nodes: Array<{
+      readonly id: string;
+      readonly type: string;
+      readonly position: [number, number];
+      readonly parameters: Record<string, unknown>;
+    }>;
+    readonly edges: Array<{
+      readonly id: string;
+      readonly source: string;
+      readonly target: string;
+      readonly sourceHandle: string;
+      readonly targetHandle: string;
+    }>;
+  };
+};
+
 // Types
 interface WorkflowDesignerProps {
   readonly initialWorkflow?: {
@@ -236,6 +257,11 @@ function WorkflowDesignerContent({
   const operations = useWorkflowOperations();
   const canvas = useWorkflowCanvas();
   const handlers = useWorkflowEventHandlers();
+
+  // Export preview state
+  const [showExportPreview, setShowExportPreview] = useState(false);
+  const [exportPreviewData, setExportPreviewData] = useState<ExportWorkflowPayload | null>(null);
+  const [exportFilename, setExportFilename] = useState<string>('workflow.json');
 
   // Advanced performance optimization hooks
   const workflowComplexity = useWorkflowComplexity();
@@ -706,19 +732,38 @@ function WorkflowDesignerContent({
 
   const handleExport = useCallback(() => {
     try {
-      const workflow = {
+      // Keep backward-compat callback
+      const raw = { name: workflowName, nodes, connections } as const;
+      onExport?.(raw);
+
+      // Build export payload (same shape as file export)
+      const payload = {
         name: workflowName,
-        nodes,
-        connections,
+        definition: {
+          nodes: nodes.map((n) => ({
+            id: n.id,
+            type: n.type,
+            position: [n.x, n.y] as [number, number],
+            parameters: n.config as Record<string, unknown>,
+          })),
+          edges: connections.map((c) => ({
+            id: c.id,
+            source: c.sourceNodeId,
+            target: c.targetNodeId,
+            sourceHandle: c.sourcePortId,
+            targetHandle: c.targetPortId,
+          })),
+        },
       };
-      onExport?.(workflow);
-      operations.exportWorkflow();
-      showNotification('success', 'Workflow exported successfully!');
+      const file = `${(workflowName || 'workflow').replace(/\s+/g, '_')}.json`;
+      setExportPreviewData(payload);
+      setExportFilename(file);
+      setShowExportPreview(true);
     } catch (error) {
       console.error('Export failed:', error);
-      showNotification('error', 'Failed to export workflow');
+      showNotification('error', 'Failed to generate export preview');
     }
-  }, [operations, onExport, nodes, connections, workflowName, showNotification]);
+  }, [connections, nodes, onExport, showNotification, workflowName]);
 
   // Keyboard event setup
   useEffect(() => {
@@ -1066,6 +1111,19 @@ function WorkflowDesignerContent({
 
       {/* Status Bar */}
       <FooterSection />
+
+      {/* Export JSON Preview Modal */}
+      <ExportPreviewModal
+        isOpen={showExportPreview}
+        onClose={() => setShowExportPreview(false)}
+        value={exportPreviewData}
+        filename={exportFilename}
+        onDownload={() => {
+          operations.exportWorkflow();
+          setShowExportPreview(false);
+          showNotification('success', 'Workflow exported successfully!');
+        }}
+      />
 
       {/* Draft Manager */}
       <DraftManager isOpen={showDraftManager} onClose={() => setShowDraftManager(false)} />

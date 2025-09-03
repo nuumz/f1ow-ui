@@ -1,7 +1,7 @@
 // ===== COMPONENT STYLES =====
 
-@use 'variables' as *;
-@use 'functions' as *;
+@use "variables" as *;
+@use "functions" as *;
 
 // Navigation
 .navbar {
@@ -18,21 +18,21 @@
     padding: spacing(3) spacing(4);
     flex-wrap: wrap;
     gap: spacing(2);
-    
+
     .nav-links {
       flex-wrap: wrap;
       gap: spacing(2);
     }
-    
+
     .nav-link {
       padding: spacing(1) spacing(3);
       font-size: font-size(sm);
     }
-    
+
     .nav-brand h1 {
       font-size: font-size(xl);
     }
-    
+
     .brand-tagline {
       display: none;
     }
@@ -183,7 +183,7 @@
 // Cards
 .card {
   @include card;
-  
+
   &:hover {
     @include hover-lift;
   }
@@ -281,7 +281,7 @@
   outline: none;
   flex: 1;
   font-size: font-size(sm);
-  
+
   &::placeholder {
     color: color(text-muted);
   }
@@ -289,14 +289,20 @@
 
 // Modals
 .modal-backdrop {
-  @include absolute(0, 0, 0, 0);
-  background: rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(4px);
+  // Use fixed so the backdrop always covers the viewport, regardless of parent positioning/overflow
+  position: fixed;
+  inset: 0;
+  // Match enhanced overlay aesthetics used by Draft Manager
+  background: radial-gradient(circle at 30% 20%, rgba(0, 0, 0, 0.5), rgba(0, 0, 0, 0.45));
+  backdrop-filter: blur(6px) saturate(1.2);
   z-index: z-index(modal-backdrop);
+  animation: modal-backdrop-fade 0.25s ease-out;
 }
 
 .modal {
-  @include absolute(0, 0, 0, 0);
+  // Fixed container to avoid clipping by positioned ancestors and ensure centering relative to viewport
+  position: fixed;
+  inset: 0;
   z-index: z-index(modal);
   @include flex-center;
   padding: spacing(8);
@@ -376,8 +382,22 @@
 }
 
 @keyframes spin {
-  0% { transform: rotate(0deg); }
-  100% { transform: rotate(360deg); }
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+// Modal backdrop fade-in animation (kept local to components styles)
+@keyframes modal-backdrop-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 .loading-text {
@@ -421,22 +441,22 @@
   border-radius: border-radius(full);
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  
+
   &.badge-primary {
     background: rgba(color(primary), 0.1);
     color: color(primary-dark);
   }
-  
+
   &.badge-success {
     background: rgba(color(success), 0.1);
     color: color(success-dark);
   }
-  
+
   &.badge-warning {
     background: rgba(color(warning), 0.1);
     color: color(warning-dark);
   }
-  
+
   &.badge-danger {
     background: rgba(color(danger), 0.1);
     color: color(danger-dark);
@@ -654,7 +674,6 @@
       color: color(text-muted);
     }
   }
-
 }
 
 // Workflow Templates - Moved to _workflow-templates.scss
