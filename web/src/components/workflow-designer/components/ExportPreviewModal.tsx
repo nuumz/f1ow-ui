@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo } from 'react';
 import { X, Copy, Download } from 'lucide-react';
+import { Highlight, themes } from 'prism-react-renderer';
 import Modal from '../../core/Modal';
 
 interface ExportPreviewModalProps {
@@ -17,8 +18,6 @@ export default function ExportPreviewModal({
   filename,
   onDownload,
 }: Readonly<ExportPreviewModalProps>) {
-  const preRef = useRef<HTMLPreElement | null>(null);
-
   const jsonString = useMemo(() => {
     try {
       return JSON.stringify(value, null, 2);
@@ -72,14 +71,45 @@ export default function ExportPreviewModal({
         </button>
       </div>
       <div className="modal-body">
-        <pre
-          ref={preRef}
-          id="export-preview-content"
-          className="json-preview"
-          aria-label="Export JSON preview"
-        >
-          {jsonString}
-        </pre>
+        <div id="export-preview-content" className="json-preview" aria-label="Export JSON preview">
+          <Highlight theme={themes.duotoneDark} code={jsonString} language="json">
+            {({ className, style, tokens, getLineProps, getTokenProps }) => {
+              const lineSeen = new Map<string, number>();
+              return (
+                <pre
+                  className={className}
+                  style={{
+                    ...style,
+                    margin: 0,
+                    background: 'transparent',
+                    backgroundColor: 'transparent',
+                  }}
+                >
+                  {tokens.map((line) => {
+                    const base = line.map((t) => t.content).join('|');
+                    const count = (lineSeen.get(base) ?? 0) + 1;
+                    lineSeen.set(base, count);
+                    const lineKey = `${base}__${count}`;
+                    const tokenSeen = new Map<string, number>();
+                    return (
+                      <div key={lineKey} {...getLineProps({ line, key: lineKey })}>
+                        {line.map((token) => {
+                          const tokenBase = `${token.content}|${token.types.join(',')}`;
+                          const tCount = (tokenSeen.get(tokenBase) ?? 0) + 1;
+                          tokenSeen.set(tokenBase, tCount);
+                          const tokenKey = `${tokenBase}__${tCount}`;
+                          return (
+                            <span key={tokenKey} {...getTokenProps({ token, key: tokenKey })} />
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+                </pre>
+              );
+            }}
+          </Highlight>
+        </div>
       </div>
       <div className="modal-footer">
         <button className="btn btn-secondary" onClick={handleCopy} title="Copy JSON to clipboard">
